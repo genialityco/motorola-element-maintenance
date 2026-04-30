@@ -1,32 +1,90 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { AppShell, Burger, Group, Title, NavLink, Button, Text } from '@mantine/core';
+import { AppShell, Burger, Group, Title, NavLink, Button, Text, TextInput, PasswordInput, Paper, Container, Stack, Alert } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { IconDashboard, IconSettings } from '@tabler/icons-react';
 import Link from 'next/link';
 
 // Auth Imports
 import { auth, functions } from '../../lib/firebase';
-import { onAuthStateChanged, signInWithCustomToken, signOut, User } from 'firebase/auth';
-import { httpsCallable } from 'firebase/functions';
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [opened, { toggle }] = useDisclosure();
   const [user, setUser] = useState<User | null>(null);
+  const [loadingInitial, setLoadingInitial] = useState(true);
+
+  // Estados del Login
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, setUser);
+    const unsub = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoadingInitial(false);
+    });
     return () => unsub();
   }, []);
 
-  const handleDevLogin = async () => {
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    setLoginLoading(true);
     try {
-      const getMockToken = httpsCallable(functions, 'emulateAdminLogin');
-      const result = await getMockToken();
-      await signInWithCustomToken(auth, (result.data as any).token);
-    } catch(e) { console.error("Login failed:", e); }
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch(e: any) { 
+      console.error("Login failed:", e);
+      setLoginError("Credenciales inválidas o correo no registrado.");
+    } finally {
+      setLoginLoading(false);
+    }
   };
+
+  // Si estamos validando la sesión inicial (evita el parpadeo del login)
+  if (loadingInitial) {
+    return null;
+  }
+
+  // Pantalla completa de Login si NO hay usuario
+  if (!user) {
+    return (
+      <Container size={420} my={40}>
+        <Title ta="center" order={2}>Bienvenido al CRM</Title>
+        <Text c="dimmed" size="sm" ta="center" mt={5}>
+          Ingresa tus credenciales de Administrador para continuar
+        </Text>
+
+        <Paper withBorder shadow="md" p={30} mt={30} radius="md">
+          {loginError && <Alert color="red" mb="md">{loginError}</Alert>}
+          <form onSubmit={handleLogin}>
+            <Stack>
+              <TextInput 
+                label="Correo Electrónico" 
+                placeholder="admin@ejemplo.com" 
+                required 
+                value={email}
+                onChange={(e) => setEmail(e.currentTarget.value)}
+              />
+              <PasswordInput 
+                label="Contraseña" 
+                placeholder="Tu contraseña secreta" 
+                required 
+                mt="md" 
+                value={password}
+                onChange={(e) => setPassword(e.currentTarget.value)}
+              />
+              <Button fullWidth mt="xl" type="submit" loading={loginLoading}>
+                Iniciar Sesión
+              </Button>
+            </Stack>
+          </form>
+        </Paper>
+      </Container>
+    );
+  }
 
   return (
     <AppShell
@@ -40,14 +98,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
             <Title order={3}>Motorola/Element CRM</Title>
           </Group>
-          {user ? (
-            <Group>
-              <Text size="sm" c="blue" fw={700}>✅ Logueado como: Admin</Text>
-              <Button size="xs" variant="light" color="red" onClick={() => signOut(auth)}>Salir</Button>
-            </Group>
-          ) : (
-            <Button size="xs" color="indigo" onClick={handleDevLogin}>Login Admin (Dev)</Button>
-          )}
+          <Group>
+            <Text size="sm" c="blue" fw={700}>✅ Logueado como: {user.email}</Text>
+            <Button size="xs" variant="light" color="red" onClick={() => signOut(auth)}>Salir</Button>
+          </Group>
+
         </Group>
       </AppShell.Header>
 

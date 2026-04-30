@@ -11,13 +11,8 @@ service cloud.firestore {
     match /tickets/{ticketId} {
       allow write: if false; // <- CRÍTICO: ESCRITURAS BLOQUEADAS
       
-      // Lectura basada en validación del JWT Custom Claim (Role-Based Access)
-      allow read: if request.auth != null && (
-        request.auth.token.role == 'admin' ||
-        request.auth.token.role == 'workshop' ||
-        request.auth.token.role == 'transporter' ||
-        request.auth.token.role == 'host'
-      );
+      // Lectura permitida para cualquier usuario autenticado (se eliminó restricción de roles)
+      allow read: if request.auth != null;
       
       // Historial de cambios también protegido
       match /statusHistory/{historyId} {

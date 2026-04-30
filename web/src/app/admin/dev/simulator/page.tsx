@@ -49,13 +49,14 @@ type WhatsAppPayload = {
 const PROJECT_ID = "lenovo-experiences";
 const REGION = "us-central1";
 
-// Cambia este puerto si tu emulador muestra otro.
-// Normalmente es 5001, pero en tu caso venías usando 5010.
-const FUNCTIONS_PORT = "5010";
+// Usar el puerto del emulador
+const FUNCTIONS_PORT = process.env.NEXT_PUBLIC_FUNCTIONS_PORT || "5010";
 
+// Si usamos emuladores, la URL apunta a localhost. Si no, debe apuntar a la URL de Cloud Run en producción.
 const WEBHOOK_URL =
-  `http://127.0.0.1:${FUNCTIONS_PORT}/` +
-  `${PROJECT_ID}/${REGION}/whatsappWebhook`;
+  process.env.NEXT_PUBLIC_USE_EMULATORS === "true"
+    ? `http://127.0.0.1:${FUNCTIONS_PORT}/${PROJECT_ID}/${REGION}/whatsappWebhook`
+    : `https://whatsappwebhook-rwkor6m4fa-uc.a.run.app`;
 
 const buildWhatsAppPayload = (
   phoneNumber: string,
@@ -202,7 +203,7 @@ export default function SimulatorPage() {
         </Stack>
 
         {logs.length > 0 && (
-          <Paper mt="xl" p="sm" bg="gray.1" radius="md">
+          <Paper mt="xl" p="sm" bg="gray.1" radius="md" c="black">
             <Title order={5} mb="sm">
               Logs:
             </Title>

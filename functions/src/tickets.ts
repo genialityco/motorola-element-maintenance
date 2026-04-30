@@ -1,6 +1,5 @@
-import { onCall, HttpsError } from "firebase-functions/v2/https";
-import { getFirestore } from "firebase-admin/firestore";
-import { getAuth } from "firebase-admin/auth";
+import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {getFirestore} from "firebase-admin/firestore";
 
 type TicketStatus =
   | "REPORTADO"
@@ -14,17 +13,7 @@ export const transitionTicketStatus = onCall(async (request) => {
     throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
   }
 
-  const userRole = request.auth.token.role;
-  const allowedRoles = ["admin", "workshop", "transporter"];
-
-  if (!userRole || !allowedRoles.includes(userRole as string)) {
-    throw new HttpsError(
-      "permission-denied",
-      "No tienes permisos para esta acción.",
-    );
-  }
-
-  const { ticketId, newStatus, comments } = request.data as {
+  const {ticketId, newStatus, comments} = request.data as {
     ticketId: string;
     newStatus: TicketStatus;
     comments?: string;
@@ -51,7 +40,7 @@ export const transitionTicketStatus = onCall(async (request) => {
       const currentStatus = ticketDoc.data()?.status;
 
       transaction.update(ticketRef, {
-        status: newStatus,
+        "status": newStatus,
         "timestamps.updatedAt": Date.now(),
       });
 
@@ -62,7 +51,7 @@ export const transitionTicketStatus = onCall(async (request) => {
         newStatus,
         changedBy: {
           uid: request.auth?.uid,
-          role: userRole,
+          role: request.auth?.token?.role || "user",
         },
         comments: comments || "",
         timestamp: Date.now(),
@@ -85,12 +74,4 @@ export const transitionTicketStatus = onCall(async (request) => {
       error instanceof Error ? error.message : "Error procesando el ticket.",
     );
   }
-});
-
-export const emulateAdminLogin = onCall(async () => {
-  const token = await getAuth().createCustomToken("dev-admin-uid", {
-    role: "admin",
-  });
-
-  return { token };
 });

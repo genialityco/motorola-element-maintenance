@@ -103,6 +103,7 @@ export default function TicketDetailPage() {
         mb="xl"
         bg="gray.0"
         p="md"
+        c="black"
         style={{ borderRadius: "8px" }}
       >
         <Group>

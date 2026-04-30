@@ -34,7 +34,7 @@ type ProcessWhatsAppTaskData = {
   payload: WhatsAppWebhookPayload;
 };
 
-export const whatsappWebhook = onRequest(async (req, res) => {
+export const whatsappWebhook = onRequest({cors: true}, async (req, res) => {
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
