@@ -1,4 +1,4 @@
-﻿import { initializeApp } from 'firebase-admin/app';
+﻿import {initializeApp} from "firebase-admin/app";
 initializeApp();
-export * from './tickets';
-export * from './whatsapp';
+export * from "./tickets";
+export * from "./whatsapp";

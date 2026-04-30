@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { doc, onSnapshot } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../../../../../lib/firebase";
-import { Ticket, TicketStatus } from "../../../../../../../../shared/types";
+import { Ticket, TicketStatus } from "../../../../../../../shared/types";
 import { useParams } from "next/navigation";
 import {
   Title,
