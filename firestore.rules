@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // =========================================================================
+    // REGLA ARQUITECTÓNICA INQUEBRANTABLE #2: Zero-Trust en Frontend
+    // Toda mutación de BD debe pasar o por un backend o una Cloud Function (Admin SDK)
+    // El cliente desde la web/app NUNCA escribe directamente en tickets.
+    // =========================================================================
+
+    match /tickets/{ticketId} {
+      allow write: if false; // <- CRÍTICO: ESCRITURAS BLOQUEADAS
+      
+      // Lectura basada en validación del JWT Custom Claim (Role-Based Access)
+      allow read: if request.auth != null && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.role == 'workshop' ||
+        request.auth.token.role == 'transporter' ||
+        request.auth.token.role == 'host'
+      );
+      
+      // Historial de cambios también protegido
+      match /statusHistory/{historyId} {
+        allow write: if false;
+        allow read: if request.auth != null;
+      }
+    }
+    
+    match /users/{userId} {
+      // Un usuario puede ver su perfil, y un admin puede ver a todos
+      allow read: if request.auth != null && (
+        request.auth.uid == userId || 
+        request.auth.token.role == 'admin'
+      );
+      allow write: if false;
+    }
+  }
+}
