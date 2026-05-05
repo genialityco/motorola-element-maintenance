@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { doc, onSnapshot } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
+import {
+  collection,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+} from "firebase/firestore";
 import { db, auth } from "../../../../../lib/firebase";
 import { Ticket, TicketStatus } from "../../../../../../../shared/types";
 import { useParams } from "next/navigation";
@@ -17,7 +23,27 @@ import {
   Alert,
   Image,
   SimpleGrid,
+  Timeline,
+  Collapse,
 } from "@mantine/core";
+
+type StatusHistoryEntry = {
+  id: string;
+  previousStatus?: TicketStatus;
+  newStatus: TicketStatus;
+  changedBy?: { uid?: string; role?: string };
+  comments?: string;
+  timestamp: number;
+};
+
+const STATUS_COLORS: Record<TicketStatus, string> = {
+  REPORTADO: "gray",
+  REVISION: "blue",
+  EN_REPARACION: "yellow",
+  REPARADO: "teal",
+  ENTREGADO: "green",
+  FINALIZADO: "green",
+};
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
@@ -26,8 +52,10 @@ export default function TicketDetailPage() {
   const params = useParams();
   const ticketId = params.id as string;
   const [ticket, setTicket] = useState<Ticket | null>(null);
+  const [history, setHistory] = useState<StatusHistoryEntry[]>([]);
   const [loadingStatus, setLoadingStatus] = useState<TicketStatus | null>(null);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
 
   useEffect(() => {
     if (!ticketId) return;
@@ -47,6 +75,52 @@ export default function TicketDetailPage() {
 
     return () => unsubscribe();
   }, [ticketId]);
+
+  useEffect(() => {
+    if (!ticketId) return;
+
+    const q = query(
+      collection(db, "tickets", ticketId, "statusHistory"),
+      orderBy("timestamp", "asc"),
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snap) => {
+        setHistory(
+          snap.docs.map(
+            (d) => ({ id: d.id, ...d.data() }) as StatusHistoryEntry,
+          ),
+        );
+      },
+      (error) => {
+        console.warn("⚠️ Historial bloqueado:", error.message);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [ticketId]);
+
+  const timeline = useMemo(() => {
+    if (!ticket) return [];
+
+    const createdAt = ticket.timestamps?.createdAt;
+    const initial = {
+      status: "REPORTADO" as TicketStatus,
+      timestamp: createdAt ? Number(createdAt) : 0,
+      comments: "Ticket creado",
+      changedBy: undefined as StatusHistoryEntry["changedBy"],
+    };
+
+    const transitions = history.map((entry) => ({
+      status: entry.newStatus,
+      timestamp: entry.timestamp,
+      comments: entry.comments,
+      changedBy: entry.changedBy,
+    }));
+
+    return [initial, ...transitions];
+  }, [ticket, history]);
 
   const changeStatus = async (newStatus: TicketStatus) => {
     setLoadingStatus(newStatus);
@@ -94,6 +168,7 @@ export default function TicketDetailPage() {
     "EN_REPARACION",
     "REPARADO",
     "ENTREGADO",
+    "FINALIZADO",
   ];
 
   return (
@@ -139,14 +214,62 @@ export default function TicketDetailPage() {
           <Text>{ticket.novelty?.description || "Sin descripción"}</Text>
         </Group>
 
-        <Group>
-          <Text fw={700}>Creación:</Text>
-          <Text>
-            {ticket.timestamps?.createdAt
-              ? new Date(ticket.timestamps.createdAt).toLocaleString()
-              : "---"}
-          </Text>
-        </Group>
+        <Stack gap="xs">
+          <Button
+            variant="light"
+            fullWidth
+            onClick={() => setHistoryExpanded(!historyExpanded)}
+            justify="space-between"
+          >
+            <Text fw={700}>Historial de Estados ({timeline.length})</Text>
+            <Text>{historyExpanded ? "▼" : "▶"}</Text>
+          </Button>
+
+          <Collapse expanded={historyExpanded}>
+            {timeline.length === 0 ? (
+              <Text c="dimmed" size="sm">
+                Sin registros aún.
+              </Text>
+            ) : (
+              <Timeline
+                active={timeline.length - 1}
+                bulletSize={20}
+                lineWidth={2}
+                mt="xs"
+              >
+                {timeline.map((entry, idx) => (
+                  <Timeline.Item
+                    key={idx}
+                    title={
+                      <Badge color={STATUS_COLORS[entry.status] || "gray"}>
+                        {entry.status}
+                      </Badge>
+                    }
+                  >
+                    <Text size="sm">
+                      {entry.timestamp
+                        ? new Date(entry.timestamp).toLocaleString()
+                        : "---"}
+                    </Text>
+                    {entry.comments && (
+                      <Text size="xs" c="dimmed">
+                        {entry.comments}
+                      </Text>
+                    )}
+                    {entry.changedBy?.role && (
+                      <Text size="xs" c="dimmed">
+                        Por: {entry.changedBy.role}
+                        {entry.changedBy.uid
+                          ? ` (${entry.changedBy.uid.slice(0, 8)}…)`
+                          : ""}
+                      </Text>
+                    )}
+                  </Timeline.Item>
+                ))}
+              </Timeline>
+            )}
+          </Collapse>
+        </Stack>
       </Stack>
 
       <Title order={4} mb="md" mt="xl">

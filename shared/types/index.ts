@@ -12,7 +12,8 @@ export type TicketStatus =
   | 'REVISION' 
   | 'EN_REPARACION' 
   | 'REPARADO' 
-  | 'ENTREGADO';
+  | 'ENTREGADO'
+  | 'FINALIZADO';
 
 export interface Ticket {
   id: string;

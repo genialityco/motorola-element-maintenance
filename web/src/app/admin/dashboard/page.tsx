@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { collection, onSnapshot, query } from 'firebase/firestore';
 import { db } from '../../../lib/firebase';
-import { Ticket } from '../../../../shared/types';
+import { Ticket } from '../../../../../shared/types';
 import { Table, Badge, Select, Group, Title, Paper, Button } from '@mantine/core';
 import Link from 'next/link';
 
@@ -52,6 +52,7 @@ export default function DashboardPage() {
         <Table.Thead>
           <Table.Tr>
             <Table.Th>Ticket #</Table.Th>
+            <Table.Th>Creación</Table.Th>
             <Table.Th>Punto</Table.Th>
             <Table.Th>Reportado Por</Table.Th>
             <Table.Th>Novedad</Table.Th>
@@ -63,6 +64,7 @@ export default function DashboardPage() {
           {filtered.map((ticket) => (
             <Table.Tr key={ticket.id}>
               <Table.Td fw={500}>{ticket.ticketNumber}</Table.Td>
+              <Table.Td>{ticket.timestamps?.createdAt ? new Date(ticket.timestamps.createdAt).toLocaleDateString() : 'Fecha N/A'}</Table.Td>
               <Table.Td>{ticket.point?.name || 'Local N/A'}</Table.Td>
               <Table.Td>{ticket.reporter?.name || ticket.reporter?.phone}</Table.Td>
               <Table.Td>{ticket.novelty?.description || ticket.novelty?.type}</Table.Td>
