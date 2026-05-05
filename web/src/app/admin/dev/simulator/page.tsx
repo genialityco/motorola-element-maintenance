@@ -29,8 +29,6 @@ interface ChatMessage {
   photoUrl?: string;
 }
 
-const IMG_PREFIX = "[IMG]";
-
 export default function SimulatorPage() {
   const [phone, setPhone] = useState("573001234567");
   const [input, setInput] = useState("");
@@ -136,13 +134,17 @@ export default function SimulatorPage() {
         throw new Error(`Error ${res.status}: ${body}`);
       }
 
-      const data: { responses: string[]; photoUrls?: string[] } = await res.json();
-      const botMessages: ChatMessage[] = data.responses.map((r) =>
-        r.startsWith(IMG_PREFIX)
-          ? { from: "bot", photoUrl: r.slice(IMG_PREFIX.length) }
-          : { from: "bot", text: r },
+      await res.json();
+      // Refrescar el historial completo desde el servidor — fuente única de
+      // verdad. Evita duplicados cuando el polling y la respuesta del endpoint
+      // intentan añadir los mismos mensajes del bot a la vez.
+      const historyRes = await fetch(
+        `${BACKEND_URL}/api/whatsapp/chat-history/${phone}`,
       );
-      setMessages((prev) => [...prev, ...botMessages]);
+      if (historyRes.ok) {
+        const data = await historyRes.json();
+        setMessages(data.messages || []);
+      }
     } catch (err: any) {
       setError(err.message || "No se pudo conectar al backend NestJS.");
     } finally {
@@ -166,18 +168,6 @@ export default function SimulatorPage() {
   return (
     <Container size="sm" py="xl">
       <Paper shadow="sm" p="lg" radius="md" withBorder>
-        {/* Header */}
-        <Group justify="space-between" mb="xs">
-          <Title order={2}>Simulador WhatsApp</Title>
-          <Badge color="green" variant="light">
-            Bot Condicional
-          </Badge>
-        </Group>
-
-        <Text c="dimmed" size="xs" mb="md">
-          Backend: {BACKEND_URL}/api/whatsapp/simulate — Enter para enviar
-        </Text>
-
         <TextInput
           label="Número de teléfono (remitente)"
           value={phone}
@@ -223,7 +213,7 @@ export default function SimulatorPage() {
                   radius="md"
                   maw="75%"
                   style={{
-                    background: msg.from === "user" ? "#dcf8c6" : "#ffffff",
+                    background: msg.from === "user" ? "#dcf8c6" : "#bffcb2",
                     boxShadow: "0 1px 2px rgba(0,0,0,.15)",
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
@@ -316,7 +306,7 @@ export default function SimulatorPage() {
                   <ActionIcon
                     {...props}
                     size="lg"
-                    variant="subtle"
+                    variant="filled"
                     color="green"
                     disabled={loading}
                     title="Adjuntar fotos"
@@ -350,13 +340,7 @@ export default function SimulatorPage() {
         </Paper>
 
         <Group justify="space-between">
-          <Stack gap={2}>
-            <Text size="xs" c="dimmed">
-              Tip: para crear un ticket, escribe <b>1</b>, ingresa tu número,
-              adjunta fotos y escribe la descripción.
-            </Text>
-          </Stack>
-          <Button size="xs" variant="subtle" color="gray" onClick={handleReset}>
+          <Button size="xs" variant="light" color="gray" onClick={handleReset}>
             Limpiar chat
           </Button>
         </Group>

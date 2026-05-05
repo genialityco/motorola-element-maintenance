@@ -10,6 +10,7 @@ import {
   Paper,
   ScrollArea,
   Stack,
+  Switch,
   Text,
   Textarea,
   Title,
@@ -59,6 +60,8 @@ export default function ChatsPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [botEnabled, setBotEnabled] = useState(true);
+  const [togglingBot, setTogglingBot] = useState(false);
   const viewport = useRef<HTMLDivElement>(null);
 
   // Scroll automático al final
@@ -114,6 +117,8 @@ export default function ChatsPage() {
             ),
             lastMessage: "",
           });
+          // Cargar el estado del bot desde Firestore
+          setBotEnabled(data.botEnabled !== false); // Por defecto activo
         }
       },
     );
@@ -159,13 +164,41 @@ export default function ChatsPage() {
     }
   };
 
+  const handleToggleBot = async (enabled: boolean) => {
+    if (!selectedPhone) return;
+    
+    setTogglingBot(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("No autenticado.");
+
+      const res = await fetch(`${BACKEND_URL}/api/whatsapp/bot-toggle`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ phone: selectedPhone, botEnabled: enabled }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || `Error ${res.status}`);
+      }
+
+      setBotEnabled(enabled);
+    } catch (err: any) {
+      setError(err.message || "Error al cambiar el estado del bot.");
+      setBotEnabled(!enabled); // Revertir el cambio
+    } finally {
+      setTogglingBot(false);
+    }
+  };
+
   return (
     <Paper p="md" shadow="sm" radius="md" withBorder style={{ height: "calc(100vh - 120px)" }}>
       <Group mb="md">
         <Title order={2}>Chats WhatsApp</Title>
-        <Text size="xs" c="dimmed">
-          Chatea en tiempo real con los usuarios
-        </Text>
       </Group>
 
       <Group align="flex-start" style={{ height: "calc(100% - 56px)" }} gap={0}>
@@ -223,14 +256,25 @@ export default function ChatsPage() {
                 p="sm"
                 style={{
                   borderBottom: "1px solid #dee2e6",
-                  background: "#f8f9fa",
+                  background: "#6e8f6d",
                   flexShrink: 0,
                 }}
               >
-                <Text fw={700}>{selectedPhone}</Text>
-                <Text size="xs" c="dimmed">
-                  Estado bot: {selectedSession.state}
-                </Text>
+                <Group justify="space-between" mb="xs">
+                  <Box>
+                    <Text fw={700} c={"dark"}>{selectedPhone}</Text>
+                    <Text size="xs" c="dark">
+                      Estado bot: {selectedSession.state}
+                    </Text>
+                  </Box>
+                  <Switch
+                    label={botEnabled ? "Bot activo" : "Bot inactivo"}
+                    checked={botEnabled}
+                    onChange={(e) => handleToggleBot(e.currentTarget.checked)}
+                    disabled={togglingBot}
+                    color="green"
+                  />
+                </Group>
               </Box>
 
               {/* Mensajes */}

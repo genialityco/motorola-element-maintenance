@@ -143,6 +143,14 @@ export class WhatsappController {
     return { success: true };
   }
 
+  // Admin: habilita o deshabilita las respuestas automáticas del bot
+  @Post('bot-toggle')
+  @UseGuards(FirebaseAuthGuard)
+  async toggleBot(@Body() body: { phone: string; botEnabled: boolean }) {
+    await this.whatsappService.toggleBotForSession(body.phone, body.botEnabled);
+    return { success: true };
+  }
+
   // Obtener historial de chat de un usuario
   @Get('chat-history/:phone')
   async getChatHistory(@Param('phone') phone: string) {

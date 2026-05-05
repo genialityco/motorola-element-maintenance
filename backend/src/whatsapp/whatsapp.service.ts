@@ -165,6 +165,13 @@ export class WhatsappService implements OnModuleInit {
     await this.sendMessage(to, text);
   }
 
+  // Habilita o deshabilita las respuestas automáticas del bot para una sesión
+  async toggleBotForSession(phone: string, botEnabled: boolean) {
+    const ref = this.firebase.db.collection('whatsapp_sessions').doc(phone);
+    await ref.set({ botEnabled }, { merge: true });
+    this.logger.log(`[${phone}] Bot ${botEnabled ? 'habilitado' : 'deshabilitado'}`);
+  }
+
   private formatTicketsList(tickets: PendingTicket[]): string {
     return tickets
       .map((t, i) => `${i + 1}. *${t.ticketNumber}* — Estado: ${t.status}`)
@@ -275,6 +282,9 @@ export class WhatsappService implements OnModuleInit {
     const session = sessionDoc.data() || {};
     const state: string = session.state || 'IDLE';
 
+    // Verificar si el bot está habilitado. Por defecto está activo (true)
+    const botEnabled = session.botEnabled !== false;
+
     // Guardar mensaje del usuario en historial (con URL si es imagen)
     if (message.type === 'image' && (message.image?.directUrl || message.image?.id)) {
       let photoUrl = message.image.directUrl;
@@ -296,6 +306,12 @@ export class WhatsappService implements OnModuleInit {
       }
     } else {
       await this.saveMessage(phone, 'user', body || '[imagen]');
+    }
+
+    // Si el bot está deshabilitado, solo guardar el mensaje y retornar
+    if (!botEnabled) {
+      this.logger.log(`[${phone}] Bot deshabilitado. Mensaje guardado sin respuesta automática.`);
+      return;
     }
 
     const send = (text: string) => this.reply(phone, text, onResponse);
@@ -387,10 +403,6 @@ export class WhatsappService implements OnModuleInit {
         if (message.image.caption) {
           finalDescription = message.image.caption;
           readyToCreate = true;
-        } else {
-          await send(
-            'Foto recibida ✅. Puedes enviar más fotos o escribe una descripción del problema para crear el ticket.',
-          );
         }
       } else if (message.type === 'text' && body) {
         finalDescription = body;
@@ -419,7 +431,7 @@ export class WhatsappService implements OnModuleInit {
         );
         await send(
           `✅ Ticket *${ticketData.ticketNumber}* creado exitosamente.\n\n` +
-          `Te notificaremos cuando haya actualizaciones. (ID: ${docRef.id})`,
+          `Te notificaremos cuando haya actualizaciones de estados.`,
         );
         await sessionRef.set(
           { state: 'IDLE', tempPhotos: [], targetPhone: null },
