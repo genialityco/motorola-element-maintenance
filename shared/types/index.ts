@@ -18,6 +18,8 @@ export type TicketStatus =
 export interface Ticket {
   id: string;
   ticketNumber: string;
+  ciudad?: string;
+  canal?: string;
   point: {
     id: string;
     name: string;

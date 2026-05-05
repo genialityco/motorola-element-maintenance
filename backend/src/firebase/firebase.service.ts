@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   initializeApp,
   getApps,
@@ -11,14 +11,14 @@ import { getAuth, Auth } from 'firebase-admin/auth';
 import { getStorage, Storage } from 'firebase-admin/storage';
 
 @Injectable()
-export class FirebaseService implements OnModuleInit {
+export class FirebaseService {
   private readonly logger = new Logger(FirebaseService.name);
   private _app: App;
   db: Firestore;
   auth: Auth;
   storage: Storage;
 
-  onModuleInit() {
+  constructor() {
     const useEmulators = process.env.USE_FIREBASE_EMULATORS === 'true';
 
     // El Admin SDK lee estas variables de entorno de forma lazy, antes del

@@ -6,5 +6,6 @@ import { FirebaseAuthGuard } from '../auth/firebase-auth.guard';
 @Module({
   controllers: [WhatsappController],
   providers: [WhatsappService, FirebaseAuthGuard],
+  exports: [WhatsappService],
 })
 export class WhatsappModule {}

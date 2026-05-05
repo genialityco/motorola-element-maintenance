@@ -29,6 +29,10 @@ interface PendingTicket {
   ticketNumber: string;
   status: string;
   photos?: string[];
+  description?: string;
+  ciudad?: string;
+  canal?: string;
+  punto?: string;
 }
 
 const MENU =
@@ -38,6 +42,14 @@ const MENU =
   `3. Para editar un ticket presiona 3\n` +
   `4. Para eliminar un ticket presiona 4\n` +
   `5. Para finalizar un ticket presiona 5`;
+
+// Capitaliza la primera letra de cada palabra, preservando el resto
+function normalizeText(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 @Injectable()
 export class WhatsappService implements OnModuleInit {
@@ -71,16 +83,40 @@ export class WhatsappService implements OnModuleInit {
             if (prevStatus && prevStatus !== newStatus) {
               const phone = data.reporter?.phone as string;
               if (phone) {
-                const msg =
-                  `El estado de su solicitud *${data.ticketNumber}* ha cambiado de "${prevStatus}" a "${newStatus}".`;
-                // Guardar en historial para que el simulador lo vea
-                await this.saveMessage(phone, 'bot', msg).catch((err) =>
-                  this.logger.error('Error guardando notificación en historial:', err),
-                );
-                // Intentar enviar por WhatsApp (puede fallar si no hay credenciales)
-                await this.sendMessage(phone, msg).catch((err) =>
-                  this.logger.error('Error en notificación de estado:', err),
-                );
+                if (newStatus === 'REPARADO') {
+                  // Notificación especial con fotos de reparación
+                  const repairPhotos = (data.photos?.repair as string[]) || [];
+                  const description = (data.novelty?.description as string) || '';
+                  const msg =
+                    repairPhotos.length > 0
+                      ? `Estas son las evidencias de que su ticket *${data.ticketNumber}* con descripción "${description}" ha sido reparado:`
+                      : `El estado de su solicitud *${data.ticketNumber}* ha cambiado de "${prevStatus}" a "${newStatus}".`;
+
+                  await this.saveMessage(phone, 'bot', msg).catch((err) =>
+                    this.logger.error('Error guardando notificación REPARADO:', err),
+                  );
+                  await this.sendMessage(phone, msg).catch((err) =>
+                    this.logger.error('Error enviando notificación REPARADO:', err),
+                  );
+
+                  for (const photoUrl of repairPhotos) {
+                    await this.saveMessage(phone, 'bot', '[imagen]', photoUrl).catch((err) =>
+                      this.logger.error('Error guardando foto reparación en historial:', err),
+                    );
+                    await this.sendImageMessage(phone, photoUrl, 'Evidencia de reparación').catch((err) =>
+                      this.logger.error('Error enviando foto de reparación:', err),
+                    );
+                  }
+                } else {
+                  const msg =
+                    `El estado de su solicitud *${data.ticketNumber}* ha cambiado de "${prevStatus}" a "${newStatus}".`;
+                  await this.saveMessage(phone, 'bot', msg).catch((err) =>
+                    this.logger.error('Error guardando notificación en historial:', err),
+                  );
+                  await this.sendMessage(phone, msg).catch((err) =>
+                    this.logger.error('Error en notificación de estado:', err),
+                  );
+                }
               }
             }
           }
@@ -91,7 +127,7 @@ export class WhatsappService implements OnModuleInit {
     this.logger.log('Listener de cambios de estado de tickets activo.');
   }
 
-  // Envía mensaje real por WhatsApp API
+  // Envía mensaje de texto por WhatsApp API
   async sendMessage(to: string, text: string) {
     const token = process.env.WHATSAPP_TOKEN;
     const phoneId = process.env.WHATSAPP_PHONE_ID;
@@ -120,6 +156,40 @@ export class WhatsappService implements OnModuleInit {
 
     if (!res.ok) {
       this.logger.error(`Error enviando WhatsApp: ${res.status} ${await res.text()}`);
+    }
+  }
+
+  // Envía imagen por WhatsApp API usando una URL pública
+  async sendImageMessage(to: string, imageUrl: string, caption?: string) {
+    const token = process.env.WHATSAPP_TOKEN;
+    const phoneId = process.env.WHATSAPP_PHONE_ID;
+
+    if (!token || !phoneId) {
+      this.logger.warn('Faltan WHATSAPP_TOKEN o WHATSAPP_PHONE_ID');
+      return;
+    }
+
+    const body: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: { link: imageUrl, ...(caption ? { caption } : {}) },
+    };
+
+    const res = await fetch(
+      `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+
+    if (!res.ok) {
+      this.logger.error(`Error enviando imagen WhatsApp: ${res.status} ${await res.text()}`);
     }
   }
 
@@ -152,8 +222,9 @@ export class WhatsappService implements OnModuleInit {
   ) {
     await this.saveMessage(phone, 'bot', text, photoUrl);
     if (onResponse) {
-      // Si hay foto, la marcamos con prefijo [IMG] para que el simulador la renderice
       onResponse(photoUrl ? `[IMG]${photoUrl}` : text);
+    } else if (photoUrl) {
+      await this.sendImageMessage(phone, photoUrl, text !== '[imagen]' ? text : undefined);
     } else {
       await this.sendMessage(phone, text);
     }
@@ -190,6 +261,10 @@ export class WhatsappService implements OnModuleInit {
         ticketNumber: data.ticketNumber as string,
         status: data.status as string,
         photos: (data.photos?.evidence as string[]) || [],
+        description: (data.novelty?.description as string) || '',
+        ciudad: (data.ciudad as string) || '',
+        canal: (data.canal as string) || '',
+        punto: (data.point?.name as string) || '',
       };
     });
   }
@@ -285,23 +360,23 @@ export class WhatsappService implements OnModuleInit {
     // Verificar si el bot está habilitado. Por defecto está activo (true)
     const botEnabled = session.botEnabled !== false;
 
-    // Guardar mensaje del usuario en historial (con URL si es imagen)
+    // Extraer URL de imagen entrante (una sola vez para todos los estados)
+    let incomingPhotoUrl: string | undefined;
     if (message.type === 'image' && (message.image?.directUrl || message.image?.id)) {
-      let photoUrl = message.image.directUrl;
-      // Si viene de WhatsApp API real (tiene id pero no directUrl), descargarla
-      if (!photoUrl && message.image?.id) {
-        photoUrl = await this.uploadMedia(
+      incomingPhotoUrl = message.image.directUrl;
+      if (!incomingPhotoUrl && message.image?.id) {
+        incomingPhotoUrl = await this.uploadMedia(
           message.image.id,
           message.image.mime_type || 'image/jpeg',
           phone,
         );
       }
-      if (photoUrl) {
+      if (incomingPhotoUrl) {
         await this.saveMessage(
           phone,
           'user',
           message.image.caption || '[imagen]',
-          photoUrl,
+          incomingPhotoUrl,
         );
       }
     } else {
@@ -320,11 +395,8 @@ export class WhatsappService implements OnModuleInit {
     // ─── IDLE ────────────────────────────────────────────────────────────────
     if (state === 'IDLE') {
       if (body === '1') {
-        await send('Por favor ingresa tu número de celular:');
-        await sessionRef.set(
-          { state: 'WAITING_PHONE_FOR_TICKET_CREATION' },
-          { merge: true },
-        );
+        await send('¿En qué ciudad se encuentra el punto de venta?');
+        await sessionRef.set({ state: 'WAITING_CITY' }, { merge: true });
       } else if (body === '2') {
         await send('Por favor ingresa tu número de celular:');
         await sessionRef.set(
@@ -361,10 +433,43 @@ export class WhatsappService implements OnModuleInit {
         await send(MENU);
       }
 
-    // ─── CREAR TICKET ────────────────────────────────────────────────────────
+    // ─── CREAR TICKET: Ciudad → Canal → Punto → Teléfono ────────────────────
+    } else if (state === 'WAITING_CITY') {
+      if (!body) {
+        await send('Por favor ingresa el nombre de la ciudad:');
+        return;
+      }
+      await sessionRef.set(
+        { state: 'WAITING_CANAL', tempCity: normalizeText(body) },
+        { merge: true },
+      );
+      await send('¿Cuál es el canal de venta? (ejemplo: Retail, Operador, Online):');
+
+    } else if (state === 'WAITING_CANAL') {
+      if (!body) {
+        await send('Por favor ingresa el canal de venta:');
+        return;
+      }
+      await sessionRef.set(
+        { state: 'WAITING_PUNTO_VENTA', tempCanal: normalizeText(body) },
+        { merge: true },
+      );
+      await send('¿Cuál es el nombre del punto de venta?');
+
+    } else if (state === 'WAITING_PUNTO_VENTA') {
+      if (!body) {
+        await send('Por favor ingresa el nombre del punto de venta:');
+        return;
+      }
+      await sessionRef.set(
+        { state: 'WAITING_PHONE_FOR_TICKET_CREATION', tempPunto: normalizeText(body), tempPhotos: [] },
+        { merge: true },
+      );
+      await send('Por favor ingresa tu número de celular:');
+
     } else if (state === 'WAITING_PHONE_FOR_TICKET_CREATION') {
       await sessionRef.set(
-        { state: 'WAITING_PHOTOS_AND_DESC', targetPhone: body, tempPhotos: [] },
+        { state: 'WAITING_PHOTOS_AND_DESC', targetPhone: body },
         { merge: true },
       );
       await send('Sube unas fotos y añade una descripción para el ticket.');
@@ -380,27 +485,16 @@ export class WhatsappService implements OnModuleInit {
       let finalDescription = '';
       let readyToCreate = false;
 
-      if (message.type === 'image' && (message.image?.id || message.image?.directUrl)) {
-        // Si la imagen viene del simulador ya está en Storage (directUrl).
-        // Si viene del webhook real, hay que descargarla de Meta.
-        const photoUrl = message.image.directUrl
-          ? message.image.directUrl
-          : await this.uploadMedia(
-              message.image.id!,
-              message.image.mime_type || 'image/jpeg',
-              phone,
-            );
-        if (photoUrl) {
-          tempPhotos = [...tempPhotos, photoUrl];
-          this.logger.debug(
-            `[${phone}] Foto guardada. Total: ${tempPhotos.length}. URLs: ${tempPhotos.join(', ')}`,
-          );
-          await sessionRef.set(
-            { tempPhotos, state: 'WAITING_PHOTOS_AND_DESC', targetPhone },
-            { merge: true },
-          );
-        }
-        if (message.image.caption) {
+      if (incomingPhotoUrl) {
+        tempPhotos = [...tempPhotos, incomingPhotoUrl];
+        this.logger.debug(
+          `[${phone}] Foto guardada. Total: ${tempPhotos.length}. URLs: ${tempPhotos.join(', ')}`,
+        );
+        await sessionRef.set(
+          { tempPhotos, state: 'WAITING_PHOTOS_AND_DESC', targetPhone },
+          { merge: true },
+        );
+        if (message.image?.caption) {
           finalDescription = message.image.caption;
           readyToCreate = true;
         }
@@ -410,19 +504,31 @@ export class WhatsappService implements OnModuleInit {
       }
 
       if (readyToCreate) {
-        // Validar que tenemos fotos antes de crear el ticket
-        if (!Array.isArray(tempPhotos)) {
-          tempPhotos = [];
-        }
+        if (!Array.isArray(tempPhotos)) tempPhotos = [];
         this.logger.log(
           `[${phone}] Creando ticket con ${tempPhotos.length} foto(s). Descripción: "${finalDescription}"`,
         );
+
+        // Releer para tener los últimos tempPhotos al momento de crear
+        const freshDoc = await sessionRef.get();
+        const freshData = freshDoc.data() || {};
+        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos)
+          ? freshData.tempPhotos
+          : tempPhotos;
+
+        const ciudad = (freshData.tempCity as string) || '';
+        const canal = (freshData.tempCanal as string) || '';
+        const punto = (freshData.tempPunto as string) || '';
+
         const ticketData = {
           ticketNumber: `TKT-${Math.floor(Math.random() * 90000) + 10000}`,
           status: 'REPORTADO',
+          ciudad,
+          canal,
+          point: { id: punto.toLowerCase().replace(/\s+/g, '_') || 'unknown', name: punto || 'Sin punto' },
           reporter: { phone: targetPhone, name: 'Usuario WhatsApp' },
           novelty: { type: 'unknown', description: finalDescription },
-          photos: { evidence: tempPhotos, repair: [], delivery: [] },
+          photos: { evidence: finalPhotos, repair: [], delivery: [] },
           timestamps: { createdAt: Date.now(), updatedAt: Date.now() },
         };
         const docRef = await db.collection('tickets').add(ticketData);
@@ -434,7 +540,7 @@ export class WhatsappService implements OnModuleInit {
           `Te notificaremos cuando haya actualizaciones de estados.`,
         );
         await sessionRef.set(
-          { state: 'IDLE', tempPhotos: [], targetPhone: null },
+          { state: 'IDLE', tempPhotos: [], targetPhone: null, tempCity: null, tempCanal: null, tempPunto: null },
           { merge: true },
         );
       }
@@ -493,8 +599,228 @@ export class WhatsappService implements OnModuleInit {
         await send(`Por favor selecciona un número entre 1 y ${tickets.length}.`);
         return;
       }
-      await sessionRef.set({ state: 'WAITING_NEW_DESCRIPTION', pendingTicketId: tickets[idx].id }, { merge: true });
-      await send('¿Cuál es la nueva descripción del problema?');
+      const selectedTicket = tickets[idx];
+      await sessionRef.set(
+        {
+          state: 'WAITING_EDIT_FIELD_SELECTION',
+          pendingTicketId: selectedTicket.id,
+          pendingTicketData: selectedTicket,
+        },
+        { merge: true },
+      );
+      await send(
+        `¿Qué deseas editar en el ticket *${selectedTicket.ticketNumber}*?\n\n` +
+        `1. Fotos\n` +
+        `2. Ciudad\n` +
+        `3. Punto de venta\n` +
+        `4. Canal\n` +
+        `5. Descripción`,
+      );
+
+    } else if (state === 'WAITING_EDIT_FIELD_SELECTION') {
+      const ticketData = session.pendingTicketData as PendingTicket;
+
+      if (body === '1') {
+        const photos = ticketData?.photos || [];
+        const hasPhotos = photos.length > 0;
+        const photoList = hasPhotos
+          ? `Fotos actuales:\n${photos.map((_, i) => `Foto ${i + 1}`).join('\n')}\n\n`
+          : 'Este ticket aún no tiene fotos de evidencia.\n\n';
+        await send(
+          `${photoList}¿Qué deseas hacer?\n1. Editar una foto existente${!hasPhotos ? ' (no disponible)' : ''}\n2. Agregar nuevas fotos\n0. Cancelar`,
+        );
+        await sessionRef.set({ state: 'WAITING_EDIT_PHOTO_ACTION' }, { merge: true });
+
+      } else if (body === '2') {
+        await send(`Ciudad actual: *${ticketData?.ciudad || 'Sin ciudad'}*\n\n¿Cuál es la nueva ciudad?`);
+        await sessionRef.set({ state: 'WAITING_EDIT_CITY' }, { merge: true });
+
+      } else if (body === '3') {
+        await send(`Punto de venta actual: *${ticketData?.punto || 'Sin punto'}*\n\n¿Cuál es el nuevo punto de venta?`);
+        await sessionRef.set({ state: 'WAITING_EDIT_PUNTO' }, { merge: true });
+
+      } else if (body === '4') {
+        await send(`Canal actual: *${ticketData?.canal || 'Sin canal'}*\n\n¿Cuál es el nuevo canal?`);
+        await sessionRef.set({ state: 'WAITING_EDIT_CANAL' }, { merge: true });
+
+      } else if (body === '5') {
+        await send(`Descripción actual: *${ticketData?.description || 'Sin descripción'}*\n\n¿Cuál es la nueva descripción?`);
+        await sessionRef.set({ state: 'WAITING_NEW_DESCRIPTION' }, { merge: true });
+
+      } else if (body === '0') {
+        await send('Operación cancelada.');
+        await sessionRef.set({ state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null }, { merge: true });
+
+      } else {
+        await send(
+          `Opción no válida. ¿Qué deseas editar en el ticket *${ticketData?.ticketNumber}*?\n\n` +
+          `1. Fotos\n2. Ciudad\n3. Punto de venta\n4. Canal\n5. Descripción\n0. Cancelar`,
+        );
+      }
+
+    } else if (state === 'WAITING_EDIT_PHOTO_ACTION') {
+      const ticketData = session.pendingTicketData as PendingTicket;
+      const photos = ticketData?.photos || [];
+
+      if (body === '0') {
+        await send('Operación cancelada.');
+        await sessionRef.set({ state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null }, { merge: true });
+
+      } else if (body === '1') {
+        if (photos.length === 0) {
+          await send('No hay fotos para editar. Selecciona *2* para agregar fotos nuevas, o *0* para cancelar.');
+          return;
+        }
+        const photoList = photos.map((_, i) => `Foto ${i + 1}`).join('\n');
+        await send(`${photoList}\n\n¿Cuál deseas reemplazar? (responde el número o 0 para cancelar)`);
+        await sessionRef.set({ state: 'WAITING_EDIT_PHOTO_SELECTION' }, { merge: true });
+
+      } else if (body === '2') {
+        await send('Adjunta las fotos que deseas agregar. Cuando termines, escribe *listo*.');
+        await sessionRef.set({ state: 'WAITING_EDIT_ADD_PHOTOS', tempEditPhotos: [] }, { merge: true });
+
+      } else {
+        await send('Opción no válida. Responde *1* para editar, *2* para agregar, o *0* para cancelar.');
+      }
+
+    } else if (state === 'WAITING_EDIT_ADD_PHOTOS') {
+      // ⚠️ Releer tempEditPhotos de Firestore (puede haber varias imágenes en paralelo)
+      const latestDoc = await sessionRef.get();
+      const ls = latestDoc.data() || {};
+      let tempEditPhotos: string[] = Array.isArray(ls.tempEditPhotos) ? ls.tempEditPhotos : [];
+      const ticketId = ls.pendingTicketId as string;
+
+      if (body === '0') {
+        await send('Operación cancelada.');
+        await sessionRef.set(
+          { state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null, tempEditPhotos: null },
+          { merge: true },
+        );
+      } else if (incomingPhotoUrl) {
+        tempEditPhotos = [...tempEditPhotos, incomingPhotoUrl];
+        await sessionRef.set({ tempEditPhotos }, { merge: true });
+        await send(`✅ Foto ${tempEditPhotos.length} recibida. Adjunta más fotos o escribe *listo* para guardar.`);
+
+      } else if (body) {
+        if (tempEditPhotos.length === 0) {
+          await send('Aún no has adjuntado ninguna foto. Envía imágenes y luego escribe *listo*, o escribe *0* para cancelar.');
+          return;
+        }
+        // Cualquier texto distinto de "0" confirma el guardado
+        const freshDoc = await sessionRef.get();
+        const freshData = freshDoc.data() || {};
+        const finalPhotos: string[] = Array.isArray(freshData.tempEditPhotos)
+          ? freshData.tempEditPhotos
+          : tempEditPhotos;
+
+        const ticketSnap = await db.collection('tickets').doc(ticketId).get();
+        const existing: string[] = (ticketSnap.data()?.photos?.evidence as string[]) || [];
+
+        await db.collection('tickets').doc(ticketId).update({
+          'photos.evidence': [...existing, ...finalPhotos],
+          'timestamps.updatedAt': Date.now(),
+        });
+        await send(`✅ ${finalPhotos.length} foto(s) agregada(s) al ticket correctamente.`);
+        await sessionRef.set(
+          { state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null, tempEditPhotos: null },
+          { merge: true },
+        );
+      }
+
+    } else if (state === 'WAITING_EDIT_PHOTO_SELECTION') {
+      const ticketData = session.pendingTicketData as PendingTicket;
+      const photos = ticketData?.photos || [];
+      const photoIdx = parseInt(body) - 1;
+
+      if (body === '0') {
+        await send('Operación cancelada.');
+        await sessionRef.set({ state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null }, { merge: true });
+        return;
+      }
+
+      if (isNaN(photoIdx) || photoIdx < 0 || photoIdx >= photos.length) {
+        await send(`Por favor selecciona un número entre 1 y ${photos.length}, o 0 para cancelar.`);
+        return;
+      }
+      await sessionRef.set({ state: 'WAITING_EDIT_NEW_PHOTO', pendingPhotoIndex: photoIdx }, { merge: true });
+      await send(`Adjunta la nueva foto para reemplazar la *Foto ${photoIdx + 1}*:`);
+
+    } else if (state === 'WAITING_EDIT_NEW_PHOTO') {
+      if (!incomingPhotoUrl) {
+        await send('Por favor adjunta una imagen para continuar.');
+        return;
+      }
+
+      const latestSessionDoc = await sessionRef.get();
+      const ls = latestSessionDoc.data() || {};
+      const pendingPhotoIndex = ls.pendingPhotoIndex as number;
+      const ticketId = ls.pendingTicketId as string;
+
+      const ticketSnap = await db.collection('tickets').doc(ticketId).get();
+      const currentPhotos: string[] = [...((ticketSnap.data()?.photos?.evidence as string[]) || [])];
+
+      if (pendingPhotoIndex >= 0 && pendingPhotoIndex < currentPhotos.length) {
+        currentPhotos[pendingPhotoIndex] = incomingPhotoUrl;
+      } else {
+        currentPhotos.push(incomingPhotoUrl);
+      }
+
+      await db.collection('tickets').doc(ticketId).update({
+        'photos.evidence': currentPhotos,
+        'timestamps.updatedAt': Date.now(),
+      });
+      await send('✅ Foto actualizada correctamente.');
+      await sessionRef.set(
+        { state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingPhotoIndex: null, pendingTicketData: null },
+        { merge: true },
+      );
+
+    } else if (state === 'WAITING_EDIT_CITY') {
+      if (!body) {
+        await send('Por favor ingresa el nombre de la ciudad:');
+        return;
+      }
+      const ticketId = session.pendingTicketId as string;
+      if (ticketId) {
+        await db.collection('tickets').doc(ticketId).update({
+          ciudad: normalizeText(body),
+          'timestamps.updatedAt': Date.now(),
+        });
+        await send('✅ Ciudad actualizada correctamente.');
+      }
+      await sessionRef.set({ state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null }, { merge: true });
+
+    } else if (state === 'WAITING_EDIT_CANAL') {
+      if (!body) {
+        await send('Por favor ingresa el canal:');
+        return;
+      }
+      const ticketId = session.pendingTicketId as string;
+      if (ticketId) {
+        await db.collection('tickets').doc(ticketId).update({
+          canal: normalizeText(body),
+          'timestamps.updatedAt': Date.now(),
+        });
+        await send('✅ Canal actualizado correctamente.');
+      }
+      await sessionRef.set({ state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null }, { merge: true });
+
+    } else if (state === 'WAITING_EDIT_PUNTO') {
+      if (!body) {
+        await send('Por favor ingresa el punto de venta:');
+        return;
+      }
+      const ticketId = session.pendingTicketId as string;
+      if (ticketId) {
+        const normalized = normalizeText(body);
+        await db.collection('tickets').doc(ticketId).update({
+          'point.name': normalized,
+          'point.id': normalized.toLowerCase().replace(/\s+/g, '_'),
+          'timestamps.updatedAt': Date.now(),
+        });
+        await send('✅ Punto de venta actualizado correctamente.');
+      }
+      await sessionRef.set({ state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null }, { merge: true });
 
     } else if (state === 'WAITING_NEW_DESCRIPTION') {
       const ticketId: string = session.pendingTicketId;
@@ -506,7 +832,7 @@ export class WhatsappService implements OnModuleInit {
         await send('✅ Ticket actualizado correctamente.');
       }
       await sessionRef.set(
-        { state: 'IDLE', pendingTicketId: null, pendingTickets: null },
+        { state: 'IDLE', pendingTicketId: null, pendingTickets: null, pendingTicketData: null },
         { merge: true },
       );
 

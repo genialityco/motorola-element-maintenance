@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -25,6 +25,10 @@ import {
   SimpleGrid,
   Timeline,
   Collapse,
+  ActionIcon,
+  Tooltip,
+  FileButton,
+  Box,
 } from "@mantine/core";
 
 type StatusHistoryEntry = {
@@ -56,6 +60,10 @@ export default function TicketDetailPage() {
   const [loadingStatus, setLoadingStatus] = useState<TicketStatus | null>(null);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [deletingPhotoIdx, setDeletingPhotoIdx] = useState<number | null>(null);
+  const [repairFiles, setRepairFiles] = useState<File[]>([]);
+  const [uploadingRepair, setUploadingRepair] = useState(false);
+  const repairFileInputRef = useRef<() => void>(null);
 
   useEffect(() => {
     if (!ticketId) return;
@@ -122,13 +130,18 @@ export default function TicketDetailPage() {
     return [initial, ...transitions];
   }, [ticket, history]);
 
+  const getToken = async () => {
+    const token = await auth.currentUser?.getIdToken();
+    if (!token) throw new Error("No autenticado. Inicia sesión.");
+    return token;
+  };
+
   const changeStatus = async (newStatus: TicketStatus) => {
     setLoadingStatus(newStatus);
     setErrorStatus(null);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("No autenticado. Inicia sesión.");
+      const token = await getToken();
 
       const res = await fetch(
         `${BACKEND_URL}/api/tickets/${ticketId}/transition`,
@@ -149,7 +162,6 @@ export default function TicketDetailPage() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.message || `Error ${res.status}`);
       }
-      // onSnapshot detectará el cambio en Firestore y actualizará la UI.
     } catch (error: any) {
       console.error("Error al actualizar el ticket:", error);
       setErrorStatus(
@@ -157,6 +169,64 @@ export default function TicketDetailPage() {
       );
     } finally {
       setLoadingStatus(null);
+    }
+  };
+
+  const deleteEvidencePhoto = async (idx: number) => {
+    setDeletingPhotoIdx(idx);
+    setErrorStatus(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `${BACKEND_URL}/api/tickets/${ticketId}/photos/evidence/${idx}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Error ${res.status}`);
+      }
+    } catch (error: any) {
+      setErrorStatus(error?.message || "Error al eliminar la foto.");
+    } finally {
+      setDeletingPhotoIdx(null);
+    }
+  };
+
+  const uploadRepairPhotos = async () => {
+    if (!repairFiles.length) return;
+    setUploadingRepair(true);
+    setErrorStatus(null);
+
+    try {
+      const token = await getToken();
+
+      for (const file of repairFiles) {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch(
+          `${BACKEND_URL}/api/tickets/${ticketId}/photos/repair`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            body: formData,
+          },
+        );
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.message || `Error ${res.status}`);
+        }
+      }
+
+      setRepairFiles([]);
+    } catch (error: any) {
+      setErrorStatus(error?.message || "Error al subir las fotos.");
+    } finally {
+      setUploadingRepair(false);
     }
   };
 
@@ -184,7 +254,7 @@ export default function TicketDetailPage() {
       </Group>
 
       {errorStatus && (
-        <Alert color="red" title="Error Transaccional" mb="md">
+        <Alert color="red" title="Error" mb="md" withCloseButton onClose={() => setErrorStatus(null)}>
           {errorStatus}
         </Alert>
       )}
@@ -197,6 +267,20 @@ export default function TicketDetailPage() {
         c="black"
         style={{ borderRadius: "8px" }}
       >
+        {ticket.ciudad && (
+          <Group>
+            <Text fw={700}>Ciudad:</Text>
+            <Text>{ticket.ciudad}</Text>
+          </Group>
+        )}
+
+        {ticket.canal && (
+          <Group>
+            <Text fw={700}>Canal:</Text>
+            <Text>{ticket.canal}</Text>
+          </Group>
+        )}
+
         <Group>
           <Text fw={700}>Punto Afectado:</Text>
           <Text>{ticket.point?.name || "---"}</Text>
@@ -272,13 +356,14 @@ export default function TicketDetailPage() {
         </Stack>
       </Stack>
 
+      {/* ── Fotos de Evidencia ── */}
       <Title order={4} mb="md" mt="xl">
         📷 Evidencia
       </Title>
       {ticket.photos?.evidence && ticket.photos.evidence.length > 0 ? (
         <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mb="xl">
           {ticket.photos.evidence.map((photoUrl, idx) => (
-            <Paper key={idx} p="xs" withBorder radius="md">
+            <Paper key={idx} p="xs" withBorder radius="md" style={{ position: "relative" }}>
               <Image
                 src={photoUrl}
                 alt={`Evidencia ${idx + 1}`}
@@ -286,6 +371,21 @@ export default function TicketDetailPage() {
                 fit="cover"
                 h={200}
               />
+              <Tooltip label="Eliminar foto" withArrow>
+                <ActionIcon
+                  color="red"
+                  variant="filled"
+                  size="sm"
+                  style={{ position: "absolute", top: 12, right: 12 }}
+                  onClick={() => deleteEvidencePhoto(idx)}
+                  loading={deletingPhotoIdx === idx}
+                >
+                  ✕
+                </ActionIcon>
+              </Tooltip>
+              <Text size="xs" c="dimmed" ta="center" mt={4}>
+                Foto {idx + 1}
+              </Text>
             </Paper>
           ))}
         </SimpleGrid>
@@ -295,6 +395,64 @@ export default function TicketDetailPage() {
         </Alert>
       )}
 
+      {/* ── Fotos de Reparación ── */}
+      <Title order={4} mb="md" mt="xl">
+        🔧 Evidencias de Reparación
+      </Title>
+      {ticket.photos?.repair && ticket.photos.repair.length > 0 ? (
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mb="md">
+          {ticket.photos.repair.map((photoUrl, idx) => (
+            <Paper key={idx} p="xs" withBorder radius="md">
+              <Image
+                src={photoUrl}
+                alt={`Reparación ${idx + 1}`}
+                radius="md"
+                fit="cover"
+                h={200}
+              />
+              <Text size="xs" c="dimmed" ta="center" mt={4}>
+                Reparación {idx + 1}
+              </Text>
+            </Paper>
+          ))}
+        </SimpleGrid>
+      ) : (
+        <Alert color="gray" title="Sin evidencias de reparación" mb="md">
+          No hay fotos de reparación adjuntas.
+        </Alert>
+      )}
+
+      <Box mb="xl">
+        <FileButton
+          resetRef={repairFileInputRef}
+          onChange={(files) => setRepairFiles(files)}
+          accept="image/*"
+          multiple
+        >
+          {(props) => (
+            <Button {...props} variant="light" color="teal" mr="sm">
+              Seleccionar fotos de reparación
+            </Button>
+          )}
+        </FileButton>
+        {repairFiles.length > 0 && (
+          <>
+            <Text size="sm" c="dimmed" mt="xs" mb="xs">
+              {repairFiles.length} archivo(s) seleccionado(s):{" "}
+              {repairFiles.map((f) => f.name).join(", ")}
+            </Text>
+            <Button
+              onClick={uploadRepairPhotos}
+              loading={uploadingRepair}
+              color="teal"
+            >
+              Subir fotos de reparación
+            </Button>
+          </>
+        )}
+      </Box>
+
+      {/* ── Máquina de Estados ── */}
       <Title order={4} mb="xs">
         Máquina de Estados de Reparación
       </Title>

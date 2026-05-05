@@ -21,7 +21,7 @@ cd backend
 npm run start:dev        # watch mode on :3001
 npm run build && npm run start:prod
 ```
-Backend needs either `USE_FIREBASE_EMULATORS=true` **or** `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service-account JSON. Without one of these, Firestore/Auth/Storage calls fail.
+Backend needs either `USE_FIREBASE_EMULATORS=true` **or** `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service-account JSON. Without one of these, Firestore/Auth/Storage calls fail. Copy [backend/.env.example](backend/.env.example) → `backend/.env` to bootstrap; it includes all required vars (`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID`, `WHATSAPP_VERIFY_TOKEN`, `FIREBASE_STORAGE_BUCKET`). Backend enables CORS for all origins (`app.enableCors()`).
 
 Web (Next.js 16):
 ```
@@ -30,7 +30,7 @@ npm run dev              # :3000
 npm run build && npm start
 npm run lint             # eslint flat-config
 ```
-Set `NEXT_PUBLIC_USE_EMULATORS=true` to point the client SDK at local emulators (see [web/src/lib/firebase.ts](web/src/lib/firebase.ts)).
+Set `NEXT_PUBLIC_USE_EMULATORS=true` to point the client SDK at local emulators (see [web/src/lib/firebase.ts](web/src/lib/firebase.ts)). Copy [web/.env.local.example](web/.env.local.example) → `web/.env.local`; only needs `NEXT_PUBLIC_BACKEND_URL` and `NEXT_PUBLIC_USE_EMULATORS`.
 
 Firebase Functions:
 ```
@@ -40,13 +40,13 @@ npm run serve            # build + emulators (only functions)
 npm run deploy           # firebase deploy --only functions
 npm run lint             # ESLint with google config — runs on predeploy
 ```
-`firebase deploy` runs `lint` then `build` as `predeploy` hooks (see root [firebase.json](firebase.json)). A failed lint blocks deploy.
+`firebase deploy` runs `lint` then `build` as `predeploy` hooks (see root [firebase.json](firebase.json)). A failed lint blocks deploy. Requires **Node 24** (`engines.node` in [functions/package.json](functions/package.json)).
 
 Emulators (root, run from repo root):
 ```
 firebase emulators:start
 ```
-Root [firebase.json](firebase.json) maps emulators to **functions:5010, firestore:8010, ui:4010**. The web client and backend hardcode these ports. Note that [functions/firebase.json](functions/firebase.json) declares conflicting ports (5001/8080) — that file is for running emulators *from inside* `functions/`, but if you do, the web client and backend won't be able to reach them. Prefer running emulators from the repo root.
+Root [firebase.json](firebase.json) maps emulators to **functions:5010, firestore:8010, ui:4010, auth:9099, storage:9199**. The web client and backend hardcode these ports. Note that [functions/firebase.json](functions/firebase.json) declares conflicting ports (5001/8080) — that file is for running emulators *from inside* `functions/`, but if you do, the web client and backend won't be able to reach them. Prefer running emulators from the repo root.
 
 There are **no test scripts** in any package — don't invent `npm test` commands.
 
@@ -58,13 +58,28 @@ There are **no test scripts** in any package — don't invent `npm test` command
 ### WhatsApp bot state machine
 The bot's state lives in Firestore at `whatsapp_sessions/{phone}` with fields like `state`, `tempPhotos`, `targetPhone`, `pendingTickets`, `pendingTicketId`, `botEnabled`. Authoritative implementation: [backend/src/whatsapp/whatsapp.service.ts](backend/src/whatsapp/whatsapp.service.ts). States in use (string literals — keep them spelled exactly):
 
-`IDLE`, `WAITING_PHONE_FOR_TICKET_CREATION`, `WAITING_PHOTOS_AND_DESC`, `WAITING_PHONE_FOR_STATUS`, `WAITING_ACTION_AFTER_STATUS`, `WAITING_TICKET_SELECTION_EDIT`, `WAITING_NEW_DESCRIPTION`, `WAITING_TICKET_SELECTION_DELETE`, `WAITING_TICKET_SELECTION_FINALIZE`.
+**Creación:** `IDLE` → `WAITING_CITY` → `WAITING_CANAL` → `WAITING_PUNTO_VENTA` → `WAITING_PHONE_FOR_TICKET_CREATION` → `WAITING_PHOTOS_AND_DESC`
+
+**Consulta:** `WAITING_PHONE_FOR_STATUS` → `WAITING_ACTION_AFTER_STATUS`
+
+**Edición:** `WAITING_TICKET_SELECTION_EDIT` → `WAITING_EDIT_FIELD_SELECTION` → (por campo elegido):
+- Fotos → `WAITING_EDIT_PHOTO_ACTION` → `WAITING_EDIT_PHOTO_SELECTION` → `WAITING_EDIT_NEW_PHOTO` (editar foto existente) | `WAITING_EDIT_ADD_PHOTOS` (agregar nuevas fotos; texto libre confirma guardado, `0` cancela)
+- Ciudad → `WAITING_EDIT_CITY`; Canal → `WAITING_EDIT_CANAL`; Punto → `WAITING_EDIT_PUNTO`; Descripción → `WAITING_NEW_DESCRIPTION`
+
+**Eliminación/Finalización:** `WAITING_TICKET_SELECTION_DELETE`, `WAITING_TICKET_SELECTION_FINALIZE`
+
+Normalización de texto: `normalizeText()` en `whatsapp.service.ts` aplica `trim + capitalize each word` a ciudad, canal y punto de venta al guardar (tanto en creación como en edición), de modo que `medellin` y `MEDELLIN` se almacenan igual como `Medellin`.
 
 Critical detail: in `WAITING_PHOTOS_AND_DESC`, `tempPhotos` must be re-read from Firestore on every message — multiple inbound images race, and stale in-memory copies will lose photos. The simulator endpoint reuses `processMessage` with an `onResponse` collector callback so the same code path drives both real WhatsApp traffic and the in-browser simulator.
 
 Two media ingestion paths feed the same processor: `image.directUrl` (already-uploaded, used by the simulator) and `image.id` (real Meta webhook — `uploadMedia` downloads from Graph API and persists to `whatsapp_media/{phone}/...` in Storage with `makePublic`).
 
 `botEnabled === false` short-circuits the processor: the user's message is still saved to history, but no automated reply is generated. The admin's chat UI uses this to take over a conversation.
+
+### Ticket endpoints (Admin, requieren Bearer token)
+- `POST /api/tickets/:id/transition` — cambio de estado
+- `DELETE /api/tickets/:id/photos/evidence/:index` — elimina foto de evidencia y envía mensaje WhatsApp al reportante pidiendo nuevas fotos
+- `POST /api/tickets/:id/photos/repair` — sube foto de reparación (multipart `file`); las fotos se sirven desde Storage y se envían al reportante cuando el ticket pasa a `REPARADO`
 
 ### Ticket status notifications
 [backend/src/whatsapp/whatsapp.service.ts](backend/src/whatsapp/whatsapp.service.ts) starts a `firebase.db.collection('tickets').onSnapshot` listener at module init that diffs `status` against an in-memory `ticketStatusCache` and DMs the reporter on changes. The legacy [functions/src/whatsapp.ts](functions/src/whatsapp.ts) `onTicketStatusUpdated` trigger does the same thing — if both run against the same project, users get duplicate notifications.
@@ -76,7 +91,7 @@ Both [backend/src/tickets/tickets.service.ts](backend/src/tickets/tickets.servic
 Backend uses [backend/src/auth/firebase-auth.guard.ts](backend/src/auth/firebase-auth.guard.ts) — `Authorization: Bearer <Firebase ID token>` → `verifyIdToken` → attaches decoded token as `req.user`. Roles (`admin`, `host`, `client`, `workshop`, `transporter`) are read from custom claims (`req.user.role`). `WhatsappController` mounts the guard only on `/send` and `/bot-toggle` — the webhook and simulator endpoints are public by design.
 
 ### Web admin
-Single nested `app/admin` route group with auth gating in [web/src/app/admin/layout.tsx](web/src/app/admin/layout.tsx) (Firebase Auth email/password; renders a login screen if `onAuthStateChanged` returns null). Live ticket list at `/admin/dashboard`, chat console at `/admin/dashboard/chats`, and the bot simulator at `/admin/dev/simulator`. Mantine is loaded via `MantineProvider` in [web/src/app/layout.tsx](web/src/app/layout.tsx) — keep `'use client'` on any page that uses Mantine components.
+Single nested `app/admin` route group with auth gating in [web/src/app/admin/layout.tsx](web/src/app/admin/layout.tsx) (Firebase Auth email/password; renders a login screen if `onAuthStateChanged` returns null). Live ticket list at `/admin/dashboard`, ticket detail at `/admin/dashboard/tickets/[id]`, chat console at `/admin/dashboard/chats`, and the bot simulator at `/admin/dev/simulator`. Mantine is loaded via `MantineProvider` in [web/src/app/layout.tsx](web/src/app/layout.tsx) — keep `'use client'` on any page that uses Mantine components.
 
 ## Conventions worth knowing
 
