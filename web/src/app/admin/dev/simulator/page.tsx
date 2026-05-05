@@ -1,222 +1,365 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  ActionIcon,
   Badge,
+  Box,
   Button,
   Container,
+  FileButton,
   Group,
+  Image,
   Paper,
+  ScrollArea,
   Stack,
   Text,
   Textarea,
   TextInput,
   Title,
 } from "@mantine/core";
+import { IconPaperclip, IconX } from "@tabler/icons-react";
 
-type WhatsAppPayload = {
-  object: string;
-  entry: Array<{
-    id: string;
-    changes: Array<{
-      value: {
-        messaging_product: string;
-        metadata: {
-          display_phone_number: string;
-          phone_number_id: string;
-        };
-        contacts: Array<{
-          profile: {
-            name: string;
-          };
-          wa_id: string;
-        }>;
-        messages: Array<{
-          from: string;
-          id: string;
-          timestamp: string;
-          type: string;
-          text: {
-            body: string;
-          };
-        }>;
-      };
-      field: string;
-    }>;
-  }>;
-};
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
 
-const PROJECT_ID = "lenovo-experiences";
-const REGION = "us-central1";
+interface ChatMessage {
+  from: "user" | "bot";
+  text?: string;
+  photoUrl?: string;
+}
 
-// Usar el puerto del emulador
-const FUNCTIONS_PORT = process.env.NEXT_PUBLIC_FUNCTIONS_PORT || "5010";
-
-// Si usamos emuladores, la URL apunta a localhost. Si no, debe apuntar a la URL de Cloud Run en producción.
-const WEBHOOK_URL =
-  process.env.NEXT_PUBLIC_USE_EMULATORS === "true"
-    ? `http://127.0.0.1:${FUNCTIONS_PORT}/${PROJECT_ID}/${REGION}/whatsappWebhook`
-    : `https://whatsappwebhook-rwkor6m4fa-uc.a.run.app`;
-
-const buildWhatsAppPayload = (
-  phoneNumber: string,
-  messageBody: string,
-): WhatsAppPayload => {
-  return {
-    object: "whatsapp_business_account",
-    entry: [
-      {
-        id: "WHATSAPP_BUSINESS_ACCOUNT_ID",
-        changes: [
-          {
-            value: {
-              messaging_product: "whatsapp",
-              metadata: {
-                display_phone_number: "1234567890",
-                phone_number_id: "PHONE_NUMBER_ID",
-              },
-              contacts: [
-                {
-                  profile: {
-                    name: "Mock User",
-                  },
-                  wa_id: phoneNumber,
-                },
-              ],
-              messages: [
-                {
-                  from: phoneNumber,
-                  id: `wamid.${Math.random().toString(36).substring(7)}`,
-                  timestamp: Math.floor(Date.now() / 1000).toString(),
-                  type: "text",
-                  text: {
-                    body: messageBody,
-                  },
-                },
-              ],
-            },
-            field: "messages",
-          },
-        ],
-      },
-    ],
-  };
-};
+const IMG_PREFIX = "[IMG]";
 
 export default function SimulatorPage() {
   const [phone, setPhone] = useState("573001234567");
-  const [message, setMessage] = useState("");
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const viewport = useRef<HTMLDivElement>(null);
+  const resetFileRef = useRef<() => void>(null);
 
-  const addLog = (log: string) => {
-    const time = new Date().toLocaleTimeString();
+  // Cargar historial cuando cambia el número
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/api/whatsapp/chat-history/${phone}`,
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(data.messages || []);
+        }
+      } catch (err) {
+        console.error("Error cargando historial:", err);
+      }
+    };
+    loadHistory();
+  }, [phone]);
 
-    setLogs((prev) => [`[${time}] ${log}`, ...prev]);
+  // Polling: cada 2 segundos, recargar el historial para detectar cambios de estado
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/api/whatsapp/chat-history/${phone}`,
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const newMessages = data.messages || [];
+          // Solo actualizar si hay nuevos mensajes
+          setMessages((prevMessages) => {
+            if (newMessages.length > prevMessages.length) {
+              return newMessages;
+            }
+            return prevMessages;
+          });
+        }
+      } catch (err) {
+        // Error silencioso en polling
+      }
+    }, 2000); // Cada 2 segundos
+
+    return () => clearInterval(interval);
+  }, [phone]);
+
+  // Scroll al último mensaje
+  useEffect(() => {
+    viewport.current?.scrollTo({
+      top: viewport.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [messages]);
+
+  const handleAddFiles = (files: File[] | null) => {
+    if (!files || files.length === 0) return;
+    setPendingFiles((prev) => [...prev, ...files]);
+    resetFileRef.current?.();
+  };
+
+  const removePendingFile = (index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleSend = async () => {
-    if (!message.trim() || !phone.trim()) {
-      return;
-    }
+    const text = input.trim();
+    if ((!text && pendingFiles.length === 0) || !phone.trim() || loading) return;
 
+    const filesSnapshot = pendingFiles;
+    const localPhotoBubbles: ChatMessage[] = filesSnapshot.map((f) => ({
+      from: "user",
+      photoUrl: URL.createObjectURL(f),
+    }));
+    const textBubble: ChatMessage[] = text ? [{ from: "user", text }] : [];
+
+    setInput("");
+    setPendingFiles([]);
+    setError(null);
+    setMessages((prev) => [...prev, ...localPhotoBubbles, ...textBubble]);
     setLoading(true);
 
-    const payload = buildWhatsAppPayload(phone, message);
-
     try {
-      const response = await fetch(WEBHOOK_URL, {
+      const formData = new FormData();
+      formData.append("phone", phone);
+      if (text) formData.append("message", text);
+      filesSnapshot.forEach((f) => formData.append("files", f));
+
+      const res = await fetch(`${BACKEND_URL}/api/whatsapp/simulate`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+        body: formData,
       });
 
-      if (response.ok) {
-        addLog("Éxito: 200 OK");
-        setMessage("");
-        return;
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Error ${res.status}: ${body}`);
       }
 
-      const responseText = await response.text();
-
-      addLog(
-        `Error: ${response.status}. ` +
-          `${responseText || "Sin detalle de respuesta."}`,
+      const data: { responses: string[]; photoUrls?: string[] } = await res.json();
+      const botMessages: ChatMessage[] = data.responses.map((r) =>
+        r.startsWith(IMG_PREFIX)
+          ? { from: "bot", photoUrl: r.slice(IMG_PREFIX.length) }
+          : { from: "bot", text: r },
       );
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Error desconocido";
-
-      addLog(
-        `Fetch Error: ${errorMessage}. ` +
-          "Verifica que el emulador de Firebase esté corriendo.",
-      );
+      setMessages((prev) => [...prev, ...botMessages]);
+    } catch (err: any) {
+      setError(err.message || "No se pudo conectar al backend NestJS.");
     } finally {
       setLoading(false);
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleReset = () => {
+    setMessages([]);
+    setPendingFiles([]);
+    setError(null);
+  };
+
   return (
     <Container size="sm" py="xl">
       <Paper shadow="sm" p="lg" radius="md" withBorder>
-        <Group justify="space-between" mb="md">
+        {/* Header */}
+        <Group justify="space-between" mb="xs">
           <Title order={2}>Simulador WhatsApp</Title>
-
-          <Badge color="blue" variant="light">
-            Dev Mode
+          <Badge color="green" variant="light">
+            Bot Condicional
           </Badge>
         </Group>
 
-        <Text c="dimmed" size="sm" mb="xl">
-          Esto envía un payload de prueba directamente al emulador local del
-          Webhook, simulando un mensaje entrante desde Meta WhatsApp Cloud API.
+        <Text c="dimmed" size="xs" mb="md">
+          Backend: {BACKEND_URL}/api/whatsapp/simulate — Enter para enviar
         </Text>
 
-        <Stack>
-          <TextInput
-            label="Teléfono del remitente"
-            value={phone}
-            onChange={(event) => setPhone(event.currentTarget.value)}
-            required
-          />
+        <TextInput
+          label="Número de teléfono (remitente)"
+          value={phone}
+          onChange={(e) => setPhone(e.currentTarget.value)}
+          mb="md"
+          size="xs"
+        />
 
-          <Textarea
-            label="Mensaje de prueba"
-            placeholder="Ej: La vitrina principal del punto centro está rota."
-            value={message}
-            onChange={(event) => setMessage(event.currentTarget.value)}
-            minRows={3}
-            required
-          />
+        {/* Área de chat */}
+        <Paper
+          withBorder
+          radius="md"
+          style={{ overflow: "hidden" }}
+          mb="sm"
+        >
+          {/* Barra del "teléfono" */}
+          <Box bg="green.7" p="xs">
+            <Text c="white" size="sm" fw={600}>
+              WhatsApp · {phone}
+            </Text>
+          </Box>
 
-          <Button
-            onClick={handleSend}
-            loading={loading}
-            color="green"
-            fullWidth
-            mt="md"
+          <ScrollArea
+            h={420}
+            viewportRef={viewport}
+            p="sm"
+            style={{ background: "#ece5dd" }}
           >
-            Simular Webhook Meta
+            {messages.length === 0 && (
+              <Text c="dimmed" size="sm" ta="center" mt="xl">
+                Escribe un mensaje o adjunta fotos para iniciar la conversación...
+              </Text>
+            )}
+
+            {messages.map((msg, i) => (
+              <Group
+                key={i}
+                justify={msg.from === "user" ? "flex-end" : "flex-start"}
+                mb={6}
+              >
+                <Paper
+                  p={msg.photoUrl ? 4 : "xs"}
+                  radius="md"
+                  maw="75%"
+                  style={{
+                    background: msg.from === "user" ? "#dcf8c6" : "#ffffff",
+                    boxShadow: "0 1px 2px rgba(0,0,0,.15)",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {msg.photoUrl ? (
+                    <Image
+                      src={msg.photoUrl}
+                      alt="Foto"
+                      radius="sm"
+                      fit="cover"
+                      mah={220}
+                      maw={260}
+                    />
+                  ) : (
+                    <Text size="sm" c="dark">
+                      {msg.text}
+                    </Text>
+                  )}
+                </Paper>
+              </Group>
+            ))}
+
+            {loading && (
+              <Group justify="flex-start" mb={6}>
+                <Paper
+                  p="xs"
+                  radius="md"
+                  style={{ background: "#ffffff", minWidth: 56 }}
+                >
+                  <Text size="sm" c="dimmed">
+                    escribiendo…
+                  </Text>
+                </Paper>
+              </Group>
+            )}
+          </ScrollArea>
+
+          {/* Vista previa de fotos pendientes */}
+          {pendingFiles.length > 0 && (
+            <Box p="xs" style={{ background: "#f5f5f5", borderTop: "1px solid #ddd" }}>
+              <Text size="xs" c="dimmed" mb={4}>
+                {pendingFiles.length} foto(s) listas para enviar:
+              </Text>
+              <Group gap="xs" wrap="wrap">
+                {pendingFiles.map((f, i) => (
+                  <Box key={i} style={{ position: "relative" }}>
+                    <Image
+                      src={URL.createObjectURL(f)}
+                      alt={f.name}
+                      w={64}
+                      h={64}
+                      radius="sm"
+                      fit="cover"
+                    />
+                    <ActionIcon
+                      size="xs"
+                      color="red"
+                      variant="filled"
+                      onClick={() => removePendingFile(i)}
+                      style={{
+                        position: "absolute",
+                        top: -6,
+                        right: -6,
+                      }}
+                    >
+                      <IconX size={12} />
+                    </ActionIcon>
+                  </Box>
+                ))}
+              </Group>
+            </Box>
+          )}
+
+          {/* Input */}
+          <Box p="sm" style={{ background: "#f0f0f0", borderTop: "1px solid #ddd" }}>
+            {error && (
+              <Text c="red" size="xs" mb={6}>
+                {error}
+              </Text>
+            )}
+            <Group gap="xs" align="flex-end">
+              <FileButton
+                resetRef={resetFileRef}
+                onChange={handleAddFiles}
+                accept="image/*"
+                multiple
+              >
+                {(props) => (
+                  <ActionIcon
+                    {...props}
+                    size="lg"
+                    variant="subtle"
+                    color="green"
+                    disabled={loading}
+                    title="Adjuntar fotos"
+                  >
+                    <IconPaperclip size={20} />
+                  </ActionIcon>
+                )}
+              </FileButton>
+
+              <Textarea
+                placeholder="Escribe un mensaje…"
+                value={input}
+                onChange={(e) => setInput(e.currentTarget.value)}
+                onKeyDown={handleKeyDown}
+                autosize
+                minRows={1}
+                maxRows={4}
+                style={{ flex: 1 }}
+                disabled={loading}
+              />
+              <Button
+                color="green"
+                onClick={handleSend}
+                loading={loading}
+                h={36}
+              >
+                Enviar
+              </Button>
+            </Group>
+          </Box>
+        </Paper>
+
+        <Group justify="space-between">
+          <Stack gap={2}>
+            <Text size="xs" c="dimmed">
+              Tip: para crear un ticket, escribe <b>1</b>, ingresa tu número,
+              adjunta fotos y escribe la descripción.
+            </Text>
+          </Stack>
+          <Button size="xs" variant="subtle" color="gray" onClick={handleReset}>
+            Limpiar chat
           </Button>
-        </Stack>
-
-        {logs.length > 0 && (
-          <Paper mt="xl" p="sm" bg="gray.1" radius="md" c="black">
-            <Title order={5} mb="sm">
-              Logs:
-            </Title>
-
-            <Stack gap="xs">
-              {logs.map((log, index) => (
-                <Text key={index} size="xs" ff="monospace">
-                  {log}
-                </Text>
-              ))}
-            </Stack>
-          </Paper>
-        )}
+        </Group>
       </Paper>
     </Container>
   );

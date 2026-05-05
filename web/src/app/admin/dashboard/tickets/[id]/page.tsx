@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { doc, onSnapshot } from "firebase/firestore";
-import { httpsCallable } from "firebase/functions";
-import { db, functions } from "../../../../../lib/firebase";
+import { db, auth } from "../../../../../lib/firebase";
 import { Ticket, TicketStatus } from "../../../../../../../shared/types";
 import { useParams } from "next/navigation";
 import {
@@ -16,7 +15,12 @@ import {
   Stack,
   Loader,
   Alert,
+  Image,
+  SimpleGrid,
 } from "@mantine/core";
+
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
 
 export default function TicketDetailPage() {
   const params = useParams();
@@ -28,15 +32,18 @@ export default function TicketDetailPage() {
   useEffect(() => {
     if (!ticketId) return;
 
-    // Suscripción Realtime. NUNCA `updateDoc` en esta vista, estrictamente Zero-Trust.
-    const unsubscribe = onSnapshot(doc(db, "tickets", ticketId), (doc) => {
-      if (doc.exists()) {
-        setTicket({ id: doc.id, ...doc.data() } as Ticket);
-      }
-    }, (error) => {
-      console.warn("⚠️ Snapshot bloqueado:", error.message);
-      setErrorStatus("Permiso denegado. Inicia sesión como Admin.");
-    });
+    const unsubscribe = onSnapshot(
+      doc(db, "tickets", ticketId),
+      (snap) => {
+        if (snap.exists()) {
+          setTicket({ id: snap.id, ...snap.data() } as Ticket);
+        }
+      },
+      (error) => {
+        console.warn("⚠️ Snapshot bloqueado:", error.message);
+        setErrorStatus("Permiso denegado. Inicia sesión como Admin.");
+      },
+    );
 
     return () => unsubscribe();
   }, [ticketId]);
@@ -45,24 +52,34 @@ export default function TicketDetailPage() {
     setLoadingStatus(newStatus);
     setErrorStatus(null);
 
-    // REGLA Zero-Trust: Usamos el conector Callable
-    const transitionTicketStatus = httpsCallable(
-      functions,
-      "transitionTicketStatus",
-    );
-
     try {
-      await transitionTicketStatus({
-        ticketId,
-        newStatus,
-        comments: "Transición automática desde el Dashboard Web",
-      });
-      // El onSnapshot arriba detectará el cambio de Firestore y actualizará la UI instantáneamente.
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("No autenticado. Inicia sesión.");
+
+      const res = await fetch(
+        `${BACKEND_URL}/api/tickets/${ticketId}/transition`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            newStatus,
+            comments: "Transición desde el Dashboard Web",
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Error ${res.status}`);
+      }
+      // onSnapshot detectará el cambio en Firestore y actualizará la UI.
     } catch (error: any) {
       console.error("Error al actualizar el ticket:", error);
       setErrorStatus(
-        error?.message ||
-          "Algo salió mal al transicionar el flujo (Posible regla Auth Falló)",
+        error?.message || "Algo salió mal al transicionar el estado.",
       );
     } finally {
       setLoadingStatus(null);
@@ -93,8 +110,7 @@ export default function TicketDetailPage() {
 
       {errorStatus && (
         <Alert color="red" title="Error Transaccional" mb="md">
-          {errorStatus} (Asegúrate de estar autenticado con rol Custom Claim
-          permitido).
+          {errorStatus}
         </Alert>
       )}
 
@@ -133,12 +149,35 @@ export default function TicketDetailPage() {
         </Group>
       </Stack>
 
+      <Title order={4} mb="md" mt="xl">
+        📷 Evidencia
+      </Title>
+      {ticket.photos?.evidence && ticket.photos.evidence.length > 0 ? (
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mb="xl">
+          {ticket.photos.evidence.map((photoUrl, idx) => (
+            <Paper key={idx} p="xs" withBorder radius="md">
+              <Image
+                src={photoUrl}
+                alt={`Evidencia ${idx + 1}`}
+                radius="md"
+                fit="cover"
+                h={200}
+              />
+            </Paper>
+          ))}
+        </SimpleGrid>
+      ) : (
+        <Alert color="gray" title="Sin evidencia" mb="xl">
+          No hay fotos adjuntas para este ticket.
+        </Alert>
+      )}
+
       <Title order={4} mb="xs">
         Máquina de Estados de Reparación
       </Title>
       <Text size="sm" c="dimmed" mb="md">
-        Zero-Trust Architecture: Estos botones despachan transacciones en
-        Backend ('httpsCallable'). No se escribe desde cliente.
+        Zero-Trust: Los botones envían transacciones al backend NestJS. No se
+        escribe directamente desde el cliente.
       </Text>
 
       <Group gap="sm">

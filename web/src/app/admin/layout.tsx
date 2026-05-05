@@ -3,11 +3,11 @@
 import { useEffect, useState } from 'react';
 import { AppShell, Burger, Group, Title, NavLink, Button, Text, TextInput, PasswordInput, Paper, Container, Stack, Alert } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { IconDashboard, IconSettings } from '@tabler/icons-react';
+import { IconDashboard, IconMessage, IconSettings } from '@tabler/icons-react';
 import Link from 'next/link';
 
 // Auth Imports
-import { auth, functions } from '../../lib/firebase';
+import { auth } from '../../lib/firebase';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User } from 'firebase/auth';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -113,11 +113,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           label="Dashboard Tickets" 
           leftSection={<IconDashboard size="1rem" stroke={1.5} />} 
         />
-        <NavLink 
-          component={Link} 
-          href="/admin/dev/simulator" 
-          label="Simulador Webhook" 
-          leftSection={<IconSettings size="1rem" stroke={1.5} />} 
+        <NavLink
+          component={Link}
+          href="/admin/dashboard/chats"
+          label="Chats WhatsApp"
+          leftSection={<IconMessage size="1rem" stroke={1.5} />}
+        />
+        <NavLink
+          component={Link}
+          href="/admin/dev/simulator"
+          label="Simulador Bot"
+          leftSection={<IconSettings size="1rem" stroke={1.5} />}
         />
       </AppShell.Navbar>
 
