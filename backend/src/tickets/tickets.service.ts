@@ -94,6 +94,31 @@ export class TicketsService {
     };
   }
 
+  async deleteRepairPhoto(
+    ticketId: string,
+    photoIndex: number,
+  ): Promise<void> {
+    const db = this.firebase.db;
+    const ticketRef = db.collection('tickets').doc(ticketId);
+
+    const snap = await ticketRef.get();
+    if (!snap.exists) throw new NotFoundException('El ticket no existe.');
+
+    const data = snap.data()!;
+    const repairPhotos: string[] = data.photos?.repair || [];
+
+    if (photoIndex < 0 || photoIndex >= repairPhotos.length) {
+      throw new BadRequestException('Índice de foto inválido.');
+    }
+
+    const newPhotos = repairPhotos.filter((_, i) => i !== photoIndex);
+
+    await ticketRef.update({
+      'photos.repair': newPhotos,
+      'timestamps.updatedAt': Date.now(),
+    });
+  }
+
   async addRepairPhoto(ticketId: string, photoUrl: string): Promise<void> {
     const db = this.firebase.db;
     const ticketRef = db.collection('tickets').doc(ticketId);

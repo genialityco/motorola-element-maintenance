@@ -67,6 +67,17 @@ export class TicketsController {
     return { success: true };
   }
 
+  @Delete(':id/photos/repair/:index')
+  async deleteRepairPhoto(
+    @Param('id') ticketId: string,
+    @Param('index') index: string,
+  ) {
+    const photoIndex = parseInt(index, 10);
+    if (isNaN(photoIndex)) throw new BadRequestException('Índice inválido.');
+    await this.ticketsService.deleteRepairPhoto(ticketId, photoIndex);
+    return { success: true };
+  }
+
   @Post(':id/photos/repair')
   @UseInterceptors(FileInterceptor('file'))
   async uploadRepairPhoto(

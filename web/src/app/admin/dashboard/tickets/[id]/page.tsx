@@ -61,6 +61,7 @@ export default function TicketDetailPage() {
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [deletingPhotoIdx, setDeletingPhotoIdx] = useState<number | null>(null);
+  const [deletingRepairIdx, setDeletingRepairIdx] = useState<number | null>(null);
   const [repairFiles, setRepairFiles] = useState<File[]>([]);
   const [uploadingRepair, setUploadingRepair] = useState(false);
   const repairFileInputRef = useRef<() => void>(null);
@@ -192,6 +193,29 @@ export default function TicketDetailPage() {
       setErrorStatus(error?.message || "Error al eliminar la foto.");
     } finally {
       setDeletingPhotoIdx(null);
+    }
+  };
+
+  const deleteRepairPhoto = async (idx: number) => {
+    setDeletingRepairIdx(idx);
+    setErrorStatus(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `${BACKEND_URL}/api/tickets/${ticketId}/photos/repair/${idx}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Error ${res.status}`);
+      }
+    } catch (error: any) {
+      setErrorStatus(error?.message || "Error al eliminar la foto de reparación.");
+    } finally {
+      setDeletingRepairIdx(null);
     }
   };
 
@@ -402,7 +426,7 @@ export default function TicketDetailPage() {
       {ticket.photos?.repair && ticket.photos.repair.length > 0 ? (
         <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mb="md">
           {ticket.photos.repair.map((photoUrl, idx) => (
-            <Paper key={idx} p="xs" withBorder radius="md">
+            <Paper key={idx} p="xs" withBorder radius="md" style={{ position: "relative" }}>
               <Image
                 src={photoUrl}
                 alt={`Reparación ${idx + 1}`}
@@ -410,6 +434,18 @@ export default function TicketDetailPage() {
                 fit="cover"
                 h={200}
               />
+              <Tooltip label="Eliminar foto" withArrow>
+                <ActionIcon
+                  color="red"
+                  variant="filled"
+                  size="sm"
+                  style={{ position: "absolute", top: 12, right: 12 }}
+                  onClick={() => deleteRepairPhoto(idx)}
+                  loading={deletingRepairIdx === idx}
+                >
+                  ✕
+                </ActionIcon>
+              </Tooltip>
               <Text size="xs" c="dimmed" ta="center" mt={4}>
                 Reparación {idx + 1}
               </Text>
