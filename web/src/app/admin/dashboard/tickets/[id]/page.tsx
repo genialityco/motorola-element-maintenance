@@ -30,6 +30,7 @@ import {
   FileButton,
   Box,
   Textarea,
+  Modal,
 } from "@mantine/core";
 
 type StatusHistoryEntry = {
@@ -72,6 +73,9 @@ export default function TicketDetailPage() {
   const [repairExpanded, setRepairExpanded] = useState(false);
   const [observations, setObservations] = useState("");
   const [savingObservations, setSavingObservations] = useState(false);
+  const [requestModal, setRequestModal] = useState<{ fieldKey: string; fieldLabel: string } | null>(null);
+  const [requestMessage, setRequestMessage] = useState("");
+  const [requestingField, setRequestingField] = useState(false);
 
   useEffect(() => {
     if (!ticketId) return;
@@ -144,6 +148,35 @@ export default function TicketDetailPage() {
     const token = await auth.currentUser?.getIdToken();
     if (!token) throw new Error("No autenticado. Inicia sesión.");
     return token;
+  };
+
+  const requestFieldImprovement = async () => {
+    if (!requestModal || !ticket) return;
+    setRequestingField(true);
+    setErrorStatus(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${BACKEND_URL}/api/whatsapp/request-field-update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          ticketId,
+          fieldKey: requestModal.fieldKey,
+          fieldLabel: requestModal.fieldLabel,
+          customMessage: requestMessage.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Error ${res.status}`);
+      }
+      setRequestModal(null);
+      setRequestMessage("");
+    } catch (error: any) {
+      setErrorStatus(error?.message || "Error al enviar la solicitud.");
+    } finally {
+      setRequestingField(false);
+    }
   };
 
   const saveObservations = async () => {
@@ -336,22 +369,37 @@ export default function TicketDetailPage() {
         style={{ borderRadius: "8px" }}
       >
         {ticket.ciudad && (
-          <Group>
-            <Text fw={700}>Ciudad:</Text>
-            <Text>{ticket.ciudad}</Text>
+          <Group justify="space-between">
+            <Group>
+              <Text fw={700}>Ciudad:</Text>
+              <Text>{ticket.ciudad}</Text>
+            </Group>
+            <Tooltip label="Solicitar mejora al usuario">
+              <ActionIcon variant="filled" color="orange" size="sm" onClick={() => setRequestModal({ fieldKey: "ciudad", fieldLabel: "Ciudad" })}>✎</ActionIcon>
+            </Tooltip>
           </Group>
         )}
 
         {ticket.canal && (
-          <Group>
-            <Text fw={700}>Canal:</Text>
-            <Text>{ticket.canal}</Text>
+          <Group justify="space-between">
+            <Group>
+              <Text fw={700}>Canal:</Text>
+              <Text>{ticket.canal}</Text>
+            </Group>
+            <Tooltip label="Solicitar mejora al usuario">
+              <ActionIcon variant="filled" color="orange" size="sm" onClick={() => setRequestModal({ fieldKey: "canal", fieldLabel: "Canal" })}>✎</ActionIcon>
+            </Tooltip>
           </Group>
         )}
 
-        <Group>
-          <Text fw={700}>Punto Afectado:</Text>
-          <Text>{ticket.point?.name || "---"}</Text>
+        <Group justify="space-between">
+          <Group>
+            <Text fw={700}>Punto Afectado:</Text>
+            <Text>{ticket.point?.name || "---"}</Text>
+          </Group>
+          <Tooltip label="Solicitar mejora al usuario">
+            <ActionIcon variant="filled" color="orange" size="sm" onClick={() => setRequestModal({ fieldKey: "punto", fieldLabel: "Punto de Venta" })}>✎</ActionIcon>
+          </Tooltip>
         </Group>
 
         <Group>
@@ -361,9 +409,26 @@ export default function TicketDetailPage() {
           </Text>
         </Group>
 
-        <Group>
-          <Text fw={700}>Descripción de la Novedad:</Text>
-          <Text>{ticket.novelty?.description || "Sin descripción"}</Text>
+        {(ticket.novelty?.type || ticket.extraFields?.['novelty.type']) && (
+          <Group justify="space-between">
+            <Group>
+              <Text fw={700}>Tipo de Novedad:</Text>
+              <Text>{ticket.novelty?.type || ticket.extraFields?.['novelty.type']}</Text>
+            </Group>
+            <Tooltip label="Solicitar mejora al usuario">
+              <ActionIcon variant="filled" color="orange" size="sm" onClick={() => setRequestModal({ fieldKey: "novelty.type", fieldLabel: "Tipo de Novedad" })}>✎</ActionIcon>
+            </Tooltip>
+          </Group>
+        )}
+
+        <Group justify="space-between">
+          <Group>
+            <Text fw={700}>Descripción de la Novedad:</Text>
+            <Text>{ticket.novelty?.description || ticket.extraFields?.['novelty.description'] || "Sin descripción"}</Text>
+          </Group>
+          <Tooltip label="Solicitar mejora al usuario">
+            <ActionIcon variant="filled" color="orange" size="sm" onClick={() => setRequestModal({ fieldKey: "novelty.description", fieldLabel: "Descripción de la Novedad" })}>✎</ActionIcon>
+          </Tooltip>
         </Group>
 
         <Stack gap="xs">
@@ -573,12 +638,12 @@ export default function TicketDetailPage() {
 
       {/* ── Máquina de Estados ── */}
       <Title order={4} mb="xs">
-        Máquina de Estados de Reparación
+        Estados de Reparación
       </Title>
-      <Text size="sm" c="dimmed" mb="md">
+      {/* <Text size="sm" c="dimmed" mb="md">
         Zero-Trust: Los botones envían transacciones al backend NestJS. No se
         escribe directamente desde el cliente.
-      </Text>
+      </Text> */}
 
       <Group gap="sm">
         {statusOptions.map((status) => (
@@ -620,6 +685,32 @@ export default function TicketDetailPage() {
           Guardar observaciones
         </Button>
       </Box>
+
+      <Modal
+        opened={!!requestModal}
+        onClose={() => { setRequestModal(null); setRequestMessage(""); }}
+        title={`Solicitar mejora: ${requestModal?.fieldLabel}`}
+      >
+        <Stack gap="md">
+          <Text size="sm" c="dimmed">
+            Se enviará un mensaje por WhatsApp al usuario pidiéndole que actualice <strong>{requestModal?.fieldLabel}</strong> del ticket <strong>{ticket.ticketNumber}</strong>.
+          </Text>
+          <Textarea
+            label="Mensaje adicional (opcional)"
+            placeholder="Ej: La descripción debe incluir el modelo del equipo afectado."
+            value={requestMessage}
+            onChange={(e) => setRequestMessage(e.currentTarget.value)}
+            minRows={2}
+            autosize
+          />
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => { setRequestModal(null); setRequestMessage(""); }}>Cancelar</Button>
+            <Button color="orange" loading={requestingField} onClick={requestFieldImprovement}>
+              Enviar solicitud
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Paper>
   );
 }

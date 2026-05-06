@@ -216,7 +216,15 @@ export default function DashboardPage() {
     if (key === 'ciudad') return ticket.ciudad || '';
     if (key === 'canal') return ticket.canal || '';
     if (key === 'punto') return ticket.point?.name || '';
-    return ticket.extraFields?.[key] || '';
+    if (ticket.extraFields?.[key]) return ticket.extraFields[key];
+    // Traverse dot-notation path on ticket object (e.g. "novelty.type" → ticket.novelty.type)
+    const parts = key.split('.');
+    let val: unknown = ticket;
+    for (const part of parts) {
+      if (val && typeof val === 'object') val = (val as Record<string, unknown>)[part];
+      else return '';
+    }
+    return typeof val === 'string' ? val : '';
   };
 
   const uniqueFieldValues = useMemo(() => {
@@ -725,11 +733,11 @@ export default function DashboardPage() {
             {/* ── Sub-tab: Campos ── */}
             <Tabs.Panel value="fields">
               {/* Campos del sistema (solo lectura) */}
-              <Group justify="space-between" mb="xs">
+              {/* <Group justify="space-between" mb="xs">
                 <Text size="sm" fw={600}>Campos del sistema</Text>
                 <Text size="xs" c="dimmed">Solo lectura — gestionados internamente</Text>
-              </Group>
-              <Table withTableBorder withColumnBorders mb="xl" style={{ tableLayout: 'fixed' }}>
+              </Group> */}
+              {/* <Table withTableBorder withColumnBorders mb="xl" style={{ tableLayout: 'fixed' }}>
                 <Table.Thead>
                   <Table.Tr>
                     <Table.Th style={{ width: 180 }}>Campo</Table.Th>
@@ -760,7 +768,7 @@ export default function DashboardPage() {
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
-              </Table>
+              </Table> */}
 
               {/* Campos configurables */}
               <Group justify="space-between" mb="xs">

@@ -497,13 +497,21 @@ export class WhatsappService implements OnModuleInit {
 
       // Si el campo es de tipo foto y llegó una foto, usarla directamente
       if (isPhotoField && incomingPhotoUrl) {
-        fieldValues[currentField.key] = incomingPhotoUrl;
         const nextIndex = fieldIndex + 1;
         if (nextIndex < fields.length) {
+          fieldValues[currentField.key] = incomingPhotoUrl;
           await sessionRef.set({ fieldIndex: nextIndex, fieldValues, state: 'WAITING_FIELD' }, { merge: true });
           await send(fields[nextIndex].question);
         } else {
-          await this.createTicket(phone, phone, sessionRef, [incomingPhotoUrl], message.image?.caption || '', fieldValues, {}, send);
+          // Último campo: acumular foto atómicamente y esperar confirmación por texto
+          const newLength = await this.firebase.db.runTransaction(async (tx) => {
+            const doc = await tx.get(sessionRef);
+            const existing: string[] = Array.isArray(doc.data()?.tempPhotos) ? doc.data()!.tempPhotos : [];
+            const newPhotos = [...existing, incomingPhotoUrl];
+            tx.set(sessionRef, { state: 'WAITING_PHOTOS_AND_DESC', fieldValues, targetPhone: phone, tempPhotos: newPhotos }, { merge: true });
+            return newPhotos.length;
+          });
+          await send(`Foto ${newLength} recibida. Puedes enviar más fotos o escribe *listo* para crear el ticket.`);
         }
         return;
       }
@@ -587,36 +595,26 @@ export class WhatsappService implements OnModuleInit {
       await send('Sube unas fotos y añade una descripción para el ticket.');
 
     } else if (state === 'WAITING_PHOTOS_AND_DESC') {
-      // ⚠️ IMPORTANTE: Leer el estado más reciente de tempPhotos de Firestore cada vez
-      const latestSessionDoc = await sessionRef.get();
-      const latestSession = latestSessionDoc.data() || {};
-      let tempPhotos: string[] = Array.isArray(latestSession.tempPhotos)
-        ? latestSession.tempPhotos
-        : [];
-      const targetPhone: string = latestSession.targetPhone || session.targetPhone || phone;
+      const targetPhone: string = session.targetPhone || phone;
 
       if (incomingPhotoUrl) {
-        tempPhotos = [...tempPhotos, incomingPhotoUrl];
-        await sessionRef.set({ tempPhotos, state: 'WAITING_PHOTOS_AND_DESC', targetPhone }, { merge: true });
+        // ⚠️ Transacción para evitar race condition cuando llegan múltiples fotos en paralelo
+        const newLength = await this.firebase.db.runTransaction(async (tx) => {
+          const doc = await tx.get(sessionRef);
+          const existing: string[] = Array.isArray(doc.data()?.tempPhotos) ? doc.data()!.tempPhotos : [];
+          const newPhotos = [...existing, incomingPhotoUrl];
+          tx.set(sessionRef, { tempPhotos: newPhotos, state: 'WAITING_PHOTOS_AND_DESC', targetPhone }, { merge: true });
+          return newPhotos.length;
+        });
+        await send(`Foto ${newLength} recibida. Puedes enviar más fotos o escribe *listo* para crear el ticket.`);
+      } else if (message.type === 'text' && body) {
         const freshDoc = await sessionRef.get();
         const freshData = freshDoc.data() || {};
-        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos) ? freshData.tempPhotos : tempPhotos;
-        const fieldValues: Record<string, string> = (freshData.fieldValues as Record<string, string>) || {};
-        await this.createTicket(
-          phone, targetPhone, sessionRef, finalPhotos,
-          message.image?.caption || '',
-          fieldValues,
-          { tempCity: freshData.tempCity as string, tempCanal: freshData.tempCanal as string, tempPunto: freshData.tempPunto as string },
-          send,
-        );
-      } else if (message.type === 'text' && body) {
-        if (tempPhotos.length === 0) {
+        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos) ? freshData.tempPhotos : [];
+        if (finalPhotos.length === 0) {
           await send('Por favor envía al menos una foto.');
           return;
         }
-        const freshDoc = await sessionRef.get();
-        const freshData = freshDoc.data() || {};
-        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos) ? freshData.tempPhotos : tempPhotos;
         const fieldValues: Record<string, string> = (freshData.fieldValues as Record<string, string>) || {};
         await this.createTicket(
           phone, targetPhone, sessionRef, finalPhotos, body,
@@ -1009,11 +1007,79 @@ export class WhatsappService implements OnModuleInit {
         { merge: true },
       );
 
+    // ─── MEJORA DE CAMPO SOLICITADA POR ADMIN ────────────────────────────────
+    } else if (state === 'WAITING_ADMIN_REQUESTED_UPDATE') {
+      const fieldKey: string = session.requestedFieldKey || '';
+      const fieldLabel: string = session.requestedFieldLabel || 'campo';
+      const requestedTicketId: string = session.requestedTicketId || '';
+
+      if (!body || !requestedTicketId) {
+        await send('Por favor envía el texto con la nueva información.');
+        return;
+      }
+
+      const ticketRef = db.collection('tickets').doc(requestedTicketId);
+      const ticketSnap = await ticketRef.get();
+      if (!ticketSnap.exists) {
+        await send('El ticket ya no existe. Operación cancelada.');
+        await sessionRef.set({ state: 'IDLE', requestedFieldKey: null, requestedFieldLabel: null, requestedTicketId: null }, { merge: true });
+        return;
+      }
+
+      const value = body.trim();
+      const updateData: Record<string, unknown> = { 'timestamps.updatedAt': Date.now() };
+      if (fieldKey === 'ciudad') {
+        updateData['ciudad'] = normalizeText(value);
+      } else if (fieldKey === 'canal') {
+        updateData['canal'] = normalizeText(value);
+      } else if (fieldKey === 'punto') {
+        updateData['point.name'] = normalizeText(value);
+        updateData['point.id'] = normalizeText(value).toLowerCase().replace(/\s+/g, '_');
+      } else if (fieldKey.includes('.')) {
+        updateData[fieldKey] = value;
+      } else {
+        updateData[`extraFields.${fieldKey}`] = value;
+      }
+
+      await ticketRef.update(updateData);
+      await sessionRef.set(
+        { state: 'IDLE', requestedFieldKey: null, requestedFieldLabel: null, requestedTicketId: null },
+        { merge: true },
+      );
+      await send(`✅ ¡Gracias! La información de *${fieldLabel}* del ticket ha sido actualizada.`);
+
     // ─── RESET ───────────────────────────────────────────────────────────────
     } else {
       await sessionRef.set({ state: 'IDLE' }, { merge: true });
       await send('Operación cancelada. Escribe cualquier mensaje para volver al menú.');
     }
+  }
+
+  async requestFieldUpdate(
+    ticketId: string,
+    fieldKey: string,
+    fieldLabel: string,
+    customMessage?: string,
+  ): Promise<void> {
+    const db = this.firebase.db;
+    const ticketSnap = await db.collection('tickets').doc(ticketId).get();
+    if (!ticketSnap.exists) throw new Error('Ticket no encontrado');
+    const ticket = ticketSnap.data()!;
+    const phone: string = ticket.reporter?.phone;
+    if (!phone) throw new Error('El ticket no tiene teléfono de reportante');
+    const ticketNumber: string = ticket.ticketNumber;
+
+    const msg = customMessage
+      ? `El administrador solicita que mejores *${fieldLabel}* del ticket *${ticketNumber}*.\n\n_${customMessage}_\n\nPor favor responde con la nueva información:`
+      : `El administrador solicita que mejores *${fieldLabel}* del ticket *${ticketNumber}*.\n\nPor favor responde con la nueva información:`;
+
+    const sessionRef = db.collection('whatsapp_sessions').doc(phone);
+    await sessionRef.set(
+      { state: 'WAITING_ADMIN_REQUESTED_UPDATE', requestedFieldKey: fieldKey, requestedFieldLabel: fieldLabel, requestedTicketId: ticketId },
+      { merge: true },
+    );
+    await this.sendMessage(phone, msg);
+    await this.saveMessage(phone, 'bot', msg);
   }
 
   private async createTicket(
@@ -1033,7 +1099,7 @@ export class WhatsappService implements OnModuleInit {
     const canal = fieldValues.canal || legacyData.tempCanal || '';
     const punto = fieldValues.punto || legacyData.tempPunto || '';
 
-    const standardKeys = new Set(['ciudad', 'canal', 'punto', 'photos.repair']);
+    const standardKeys = new Set(['ciudad', 'canal', 'punto', 'photos.repair', 'novelty.type', 'novelty.description']);
     const extraFields: Record<string, string> = {};
     Object.entries(fieldValues).forEach(([k, v]) => {
       if (!standardKeys.has(k)) extraFields[k] = v;
@@ -1046,7 +1112,7 @@ export class WhatsappService implements OnModuleInit {
       canal,
       point: { id: punto.toLowerCase().replace(/\s+/g, '_') || 'unknown', name: punto || 'Sin punto' },
       reporter: { phone: targetPhone, name: 'Usuario WhatsApp' },
-      novelty: { type: 'unknown', description },
+      novelty: { type: fieldValues['novelty.type'] || 'unknown', description: fieldValues['novelty.description'] || description },
       photos: { evidence: photos, repair: [], delivery: [] },
       timestamps: { createdAt: Date.now(), updatedAt: Date.now() },
       ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),

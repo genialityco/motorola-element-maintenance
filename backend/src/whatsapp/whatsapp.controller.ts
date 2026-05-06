@@ -143,6 +143,16 @@ export class WhatsappController {
     return { success: true };
   }
 
+  // Admin: solicita al usuario mejorar un campo del ticket por WhatsApp
+  @Post('request-field-update')
+  @UseGuards(FirebaseAuthGuard)
+  async requestFieldUpdate(
+    @Body() body: { ticketId: string; fieldKey: string; fieldLabel: string; customMessage?: string },
+  ) {
+    await this.whatsappService.requestFieldUpdate(body.ticketId, body.fieldKey, body.fieldLabel, body.customMessage);
+    return { success: true };
+  }
+
   // Admin: habilita o deshabilita las respuestas automáticas del bot
   @Post('bot-toggle')
   @UseGuards(FirebaseAuthGuard)
