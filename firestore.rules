@@ -24,9 +24,19 @@ service cloud.firestore {
     match /users/{userId} {
       // Un usuario puede ver su perfil, y un admin puede ver a todos
       allow read: if request.auth != null && (
-        request.auth.uid == userId || 
+        request.auth.uid == userId ||
         request.auth.token.role == 'admin'
       );
+      allow write: if false;
+    }
+
+    match /hosts/{hostId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /bot_config/{docId} {
+      allow read: if request.auth != null;
       allow write: if false;
     }
   }

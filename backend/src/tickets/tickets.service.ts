@@ -152,4 +152,11 @@ export class TicketsService {
 
     return file.publicUrl();
   }
+
+  async updateObservation(ticketId: string, observations: string): Promise<void> {
+    const ref = this.firebase.db.collection('tickets').doc(ticketId);
+    const snap = await ref.get();
+    if (!snap.exists) throw new NotFoundException(`Ticket ${ticketId} no encontrado`);
+    await ref.update({ observations, 'timestamps.updatedAt': Date.now() });
+  }
 }

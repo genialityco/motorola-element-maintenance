@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Patch,
   Delete,
   Param,
   Body,
@@ -76,6 +77,14 @@ export class TicketsController {
     if (isNaN(photoIndex)) throw new BadRequestException('Índice inválido.');
     await this.ticketsService.deleteRepairPhoto(ticketId, photoIndex);
     return { success: true };
+  }
+
+  @Patch(':id/observation')
+  updateObservation(
+    @Param('id') ticketId: string,
+    @Body() body: { observations: string },
+  ) {
+    return this.ticketsService.updateObservation(ticketId, body.observations ?? '');
   }
 
   @Post(':id/photos/repair')

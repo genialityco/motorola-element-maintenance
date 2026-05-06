@@ -50,4 +50,6 @@ export interface Ticket {
     createdAt: number;
     updatedAt: number;
   };
+  observations?: string;
+  extraFields?: Record<string, string>;
 }

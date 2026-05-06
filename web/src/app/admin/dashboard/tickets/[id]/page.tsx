@@ -29,6 +29,7 @@ import {
   Tooltip,
   FileButton,
   Box,
+  Textarea,
 } from "@mantine/core";
 
 type StatusHistoryEntry = {
@@ -61,10 +62,16 @@ export default function TicketDetailPage() {
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [deletingPhotoIdx, setDeletingPhotoIdx] = useState<number | null>(null);
-  const [deletingRepairIdx, setDeletingRepairIdx] = useState<number | null>(null);
+  const [deletingRepairIdx, setDeletingRepairIdx] = useState<number | null>(
+    null,
+  );
   const [repairFiles, setRepairFiles] = useState<File[]>([]);
   const [uploadingRepair, setUploadingRepair] = useState(false);
   const repairFileInputRef = useRef<() => void>(null);
+  const [evidenceExpanded, setEvidenceExpanded] = useState(false);
+  const [repairExpanded, setRepairExpanded] = useState(false);
+  const [observations, setObservations] = useState("");
+  const [savingObservations, setSavingObservations] = useState(false);
 
   useEffect(() => {
     if (!ticketId) return;
@@ -73,7 +80,9 @@ export default function TicketDetailPage() {
       doc(db, "tickets", ticketId),
       (snap) => {
         if (snap.exists()) {
-          setTicket({ id: snap.id, ...snap.data() } as Ticket);
+          const data = snap.data()!;
+          setTicket({ id: snap.id, ...data } as Ticket);
+          setObservations((data.observations as string) || "");
         }
       },
       (error) => {
@@ -135,6 +144,33 @@ export default function TicketDetailPage() {
     const token = await auth.currentUser?.getIdToken();
     if (!token) throw new Error("No autenticado. Inicia sesión.");
     return token;
+  };
+
+  const saveObservations = async () => {
+    setSavingObservations(true);
+    setErrorStatus(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `${BACKEND_URL}/api/tickets/${ticketId}/observation`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ observations }),
+        },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || `Error ${res.status}`);
+      }
+    } catch (error: any) {
+      setErrorStatus(error?.message || "Error al guardar las observaciones.");
+    } finally {
+      setSavingObservations(false);
+    }
   };
 
   const changeStatus = async (newStatus: TicketStatus) => {
@@ -213,7 +249,9 @@ export default function TicketDetailPage() {
         throw new Error(err.message || `Error ${res.status}`);
       }
     } catch (error: any) {
-      setErrorStatus(error?.message || "Error al eliminar la foto de reparación.");
+      setErrorStatus(
+        error?.message || "Error al eliminar la foto de reparación.",
+      );
     } finally {
       setDeletingRepairIdx(null);
     }
@@ -278,7 +316,13 @@ export default function TicketDetailPage() {
       </Group>
 
       {errorStatus && (
-        <Alert color="red" title="Error" mb="md" withCloseButton onClose={() => setErrorStatus(null)}>
+        <Alert
+          color="red"
+          title="Error"
+          mb="md"
+          withCloseButton
+          onClose={() => setErrorStatus(null)}
+        >
           {errorStatus}
         </Alert>
       )}
@@ -381,82 +425,121 @@ export default function TicketDetailPage() {
       </Stack>
 
       {/* ── Fotos de Evidencia ── */}
-      <Title order={4} mb="md" mt="xl">
-        📷 Evidencia
-      </Title>
-      {ticket.photos?.evidence && ticket.photos.evidence.length > 0 ? (
-        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mb="xl">
-          {ticket.photos.evidence.map((photoUrl, idx) => (
-            <Paper key={idx} p="xs" withBorder radius="md" style={{ position: "relative" }}>
-              <Image
-                src={photoUrl}
-                alt={`Evidencia ${idx + 1}`}
-                radius="md"
-                fit="cover"
-                h={200}
-              />
-              <Tooltip label="Eliminar foto" withArrow>
-                <ActionIcon
-                  color="red"
-                  variant="filled"
-                  size="sm"
-                  style={{ position: "absolute", top: 12, right: 12 }}
-                  onClick={() => deleteEvidencePhoto(idx)}
-                  loading={deletingPhotoIdx === idx}
+      <Stack gap="xs" mb="xl" mt="xl">
+        <Button
+          variant="light"
+          fullWidth
+          onClick={() => setEvidenceExpanded(!evidenceExpanded)}
+          justify="space-between"
+        >
+          <Text fw={700}>
+            📷 Evidencia del Problema ({ticket.photos?.evidence?.length ?? 0}{" "}
+            fotos)
+          </Text>
+          <Text>{evidenceExpanded ? "▼" : "▶"}</Text>
+        </Button>
+        <Collapse expanded={evidenceExpanded}>
+          {ticket.photos?.evidence && ticket.photos.evidence.length > 0 ? (
+            <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mt="sm">
+              {ticket.photos.evidence.map((photoUrl, idx) => (
+                <Paper
+                  key={idx}
+                  p="xs"
+                  withBorder
+                  radius="md"
+                  style={{ position: "relative" }}
                 >
-                  ✕
-                </ActionIcon>
-              </Tooltip>
-              <Text size="xs" c="dimmed" ta="center" mt={4}>
-                Foto {idx + 1}
-              </Text>
-            </Paper>
-          ))}
-        </SimpleGrid>
-      ) : (
-        <Alert color="gray" title="Sin evidencia" mb="xl">
-          No hay fotos adjuntas para este ticket.
-        </Alert>
-      )}
+                  <Image
+                    src={photoUrl}
+                    alt={`Evidencia ${idx + 1}`}
+                    radius="md"
+                    fit="cover"
+                    h={200}
+                  />
+                  <Tooltip label="Eliminar foto" withArrow>
+                    <ActionIcon
+                      color="red"
+                      variant="filled"
+                      size="sm"
+                      style={{ position: "absolute", top: 12, right: 12 }}
+                      onClick={() => deleteEvidencePhoto(idx)}
+                      loading={deletingPhotoIdx === idx}
+                    >
+                      ✕
+                    </ActionIcon>
+                  </Tooltip>
+                  <Text size="xs" c="dimmed" ta="center" mt={4}>
+                    Foto {idx + 1}
+                  </Text>
+                </Paper>
+              ))}
+            </SimpleGrid>
+          ) : (
+            <Alert color="gray" title="Sin evidencia" mt="sm">
+              No hay fotos adjuntas para este ticket.
+            </Alert>
+          )}
+        </Collapse>
+      </Stack>
 
       {/* ── Fotos de Reparación ── */}
-      <Title order={4} mb="md" mt="xl">
-        🔧 Evidencias de Reparación
-      </Title>
-      {ticket.photos?.repair && ticket.photos.repair.length > 0 ? (
-        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mb="md">
-          {ticket.photos.repair.map((photoUrl, idx) => (
-            <Paper key={idx} p="xs" withBorder radius="md" style={{ position: "relative" }}>
-              <Image
-                src={photoUrl}
-                alt={`Reparación ${idx + 1}`}
-                radius="md"
-                fit="cover"
-                h={200}
-              />
-              <Tooltip label="Eliminar foto" withArrow>
-                <ActionIcon
-                  color="red"
-                  variant="filled"
-                  size="sm"
-                  style={{ position: "absolute", top: 12, right: 12 }}
-                  onClick={() => deleteRepairPhoto(idx)}
-                  loading={deletingRepairIdx === idx}
+      <Stack gap="xs" mb="md">
+        <Button
+          variant="light"
+          color="teal"
+          fullWidth
+          onClick={() => setRepairExpanded(!repairExpanded)}
+          justify="space-between"
+        >
+          <Text fw={700}>
+            🔧 Evidencias de Reparación ({ticket.photos?.repair?.length ?? 0}{" "}
+            fotos)
+          </Text>
+          <Text>{repairExpanded ? "▼" : "▶"}</Text>
+        </Button>
+        <Collapse expanded={repairExpanded}>
+          {ticket.photos?.repair && ticket.photos.repair.length > 0 ? (
+            <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} spacing="md" mt="sm">
+              {ticket.photos.repair.map((photoUrl, idx) => (
+                <Paper
+                  key={idx}
+                  p="xs"
+                  withBorder
+                  radius="md"
+                  style={{ position: "relative" }}
                 >
-                  ✕
-                </ActionIcon>
-              </Tooltip>
-              <Text size="xs" c="dimmed" ta="center" mt={4}>
-                Reparación {idx + 1}
-              </Text>
-            </Paper>
-          ))}
-        </SimpleGrid>
-      ) : (
-        <Alert color="gray" title="Sin evidencias de reparación" mb="md">
-          No hay fotos de reparación adjuntas.
-        </Alert>
-      )}
+                  <Image
+                    src={photoUrl}
+                    alt={`Reparación ${idx + 1}`}
+                    radius="md"
+                    fit="cover"
+                    h={200}
+                  />
+                  <Tooltip label="Eliminar foto" withArrow>
+                    <ActionIcon
+                      color="red"
+                      variant="filled"
+                      size="sm"
+                      style={{ position: "absolute", top: 12, right: 12 }}
+                      onClick={() => deleteRepairPhoto(idx)}
+                      loading={deletingRepairIdx === idx}
+                    >
+                      ✕
+                    </ActionIcon>
+                  </Tooltip>
+                  <Text size="xs" c="dimmed" ta="center" mt={4}>
+                    Reparación {idx + 1}
+                  </Text>
+                </Paper>
+              ))}
+            </SimpleGrid>
+          ) : (
+            <Alert color="gray" title="Sin evidencias de reparación" mt="sm">
+              No hay fotos de reparación adjuntas.
+            </Alert>
+          )}
+        </Collapse>
+      </Stack>
 
       <Box mb="xl">
         <FileButton
@@ -511,6 +594,32 @@ export default function TicketDetailPage() {
           </Button>
         ))}
       </Group>
+
+      {/* ── Observaciones del Admin ── */}
+      <Box mt="xl">
+        <Title order={4} mb="xs">
+          Observaciones del Ticket
+        </Title>
+        <Text size="sm" c="dimmed" mb="sm">
+          Notas internas del administrador. No se envían al usuario.
+        </Text>
+        <Textarea
+          placeholder="Agrega observaciones o comentarios sobre este ticket..."
+          value={observations}
+          onChange={(e) => setObservations(e.currentTarget.value)}
+          minRows={3}
+          autosize
+          mb="sm"
+        />
+        <Button
+          onClick={saveObservations}
+          loading={savingObservations}
+          variant="light"
+          color="blue"
+        >
+          Guardar observaciones
+        </Button>
+      </Box>
     </Paper>
   );
 }

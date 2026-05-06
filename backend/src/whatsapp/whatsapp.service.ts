@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
+import { BotConfigService, interpolate } from '../bot-config/bot-config.service';
 import { FieldValue } from 'firebase-admin/firestore';
 
 type WhatsAppMessage = {
@@ -29,13 +30,16 @@ interface PendingTicket {
   ticketNumber: string;
   status: string;
   photos?: string[];
+  repairPhotos?: string[];
   description?: string;
   ciudad?: string;
   canal?: string;
   punto?: string;
+  createdAt?: number;
 }
 
-const MENU =
+// Fallback estático por si la config de Firestore no está disponible
+const MENU_FALLBACK =
   `Hola, a continuación te mostraré las diferentes funcionalidades que poseo:\n` +
   `1. Para crear un ticket presiona 1\n` +
   `2. Para ver el estado de tus tickets presiona 2\n` +
@@ -56,7 +60,10 @@ export class WhatsappService implements OnModuleInit {
   private readonly logger = new Logger(WhatsappService.name);
   private readonly ticketStatusCache = new Map<string, string>();
 
-  constructor(private readonly firebase: FirebaseService) {}
+  constructor(
+    private readonly firebase: FirebaseService,
+    private readonly botConfig: BotConfigService,
+  ) {}
 
   onModuleInit() {
     this.startTicketStatusListener();
@@ -81,16 +88,16 @@ export class WhatsappService implements OnModuleInit {
             this.ticketStatusCache.set(ticketId, newStatus);
 
             if (prevStatus && prevStatus !== newStatus) {
-              const phone = data.reporter?.phone as string;
+              const rawPhone = data.reporter?.phone as string;
+              const phone = rawPhone ? this.normalizePhoneForWhatsApp(rawPhone) : '';
               if (phone) {
                 if (newStatus === 'REPARADO') {
-                  // Notificación especial con fotos de reparación
                   const repairPhotos = (data.photos?.repair as string[]) || [];
                   const description = (data.novelty?.description as string) || '';
-                  const msg =
-                    repairPhotos.length > 0
-                      ? `Estas son las evidencias de que su ticket *${data.ticketNumber}* con descripción "${description}" ha sido reparado:`
-                      : `El estado de su solicitud *${data.ticketNumber}* ha cambiado de "${prevStatus}" a "${newStatus}".`;
+                  const msgs = await this.botConfig.getMessages().catch(() => null);
+                  const msg = repairPhotos.length > 0
+                    ? interpolate((msgs?.reparadoMessage ?? 'Estas son las evidencias de que su ticket *{ticketNumber}* ha sido reparado:'), { ticketNumber: String(data.ticketNumber), description })
+                    : interpolate((msgs?.statusChanged ?? 'El estado de su solicitud *{ticketNumber}* ha cambiado de "{prevStatus}" a "{newStatus}".'), { ticketNumber: String(data.ticketNumber), prevStatus: prevStatus!, newStatus });
 
                   await this.saveMessage(phone, 'bot', msg).catch((err) =>
                     this.logger.error('Error guardando notificación REPARADO:', err),
@@ -108,8 +115,11 @@ export class WhatsappService implements OnModuleInit {
                     );
                   }
                 } else {
-                  const msg =
-                    `El estado de su solicitud *${data.ticketNumber}* ha cambiado de "${prevStatus}" a "${newStatus}".`;
+                  const msgs = await this.botConfig.getMessages().catch(() => null);
+                  const msg = interpolate(
+                    (msgs?.statusChanged ?? 'El estado de su solicitud *{ticketNumber}* ha cambiado de "{prevStatus}" a "{newStatus}".'),
+                    { ticketNumber: String(data.ticketNumber), prevStatus: prevStatus!, newStatus },
+                  );
                   await this.saveMessage(phone, 'bot', msg).catch((err) =>
                     this.logger.error('Error guardando notificación en historial:', err),
                   );
@@ -249,6 +259,17 @@ export class WhatsappService implements OnModuleInit {
       .join('\n');
   }
 
+  private formatTicketsListWithDate(tickets: PendingTicket[]): string {
+    return tickets
+      .map((t, i) => {
+        const dateStr = t.createdAt
+          ? new Date(t.createdAt).toLocaleDateString('es-CO')
+          : 'Sin fecha';
+        return `${i + 1}. *${t.ticketNumber}*\n   Fecha: ${dateStr}\n   Estado: ${t.status}`;
+      })
+      .join('\n\n');
+  }
+
   private async getTicketsByPhone(phone: string): Promise<PendingTicket[]> {
     const snap = await this.firebase.db
       .collection('tickets')
@@ -261,10 +282,12 @@ export class WhatsappService implements OnModuleInit {
         ticketNumber: data.ticketNumber as string,
         status: data.status as string,
         photos: (data.photos?.evidence as string[]) || [],
+        repairPhotos: (data.photos?.repair as string[]) || [],
         description: (data.novelty?.description as string) || '',
         ciudad: (data.ciudad as string) || '',
         canal: (data.canal as string) || '',
         punto: (data.point?.name as string) || '',
+        createdAt: data.timestamps?.createdAt as number | undefined,
       };
     });
   }
@@ -340,6 +363,13 @@ export class WhatsappService implements OnModuleInit {
     }
   }
 
+  // Asegura que el teléfono tenga código de país (57 para Colombia si tiene 10 dígitos)
+  private normalizePhoneForWhatsApp(phone: string): string {
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length === 10 && digits.startsWith('3')) return `57${digits}`;
+    return digits;
+  }
+
   // Procesa un mensaje entrante. Si se pasa onResponse, las respuestas se colectan
   // en lugar de enviarse por WhatsApp (usado por el simulador).
   async processMessage(
@@ -395,14 +425,28 @@ export class WhatsappService implements OnModuleInit {
     // ─── IDLE ────────────────────────────────────────────────────────────────
     if (state === 'IDLE') {
       if (body === '1') {
-        await send('¿En qué ciudad se encuentra el punto de venta?');
-        await sessionRef.set({ state: 'WAITING_CITY' }, { merge: true });
-      } else if (body === '2') {
-        await send('Por favor ingresa tu número de celular:');
+        const fields = await this.botConfig.getFields();
+        if (fields.length === 0) {
+          await send('El sistema no tiene campos configurados para crear tickets. Contacta al administrador.');
+          return;
+        }
+        await send(fields[0].label);
         await sessionRef.set(
-          { state: 'WAITING_PHONE_FOR_STATUS' },
+          { state: 'WAITING_FIELD', fieldIndex: 0, fieldValues: {}, tempPhotos: [] },
           { merge: true },
         );
+      } else if (body === '2') {
+        const myTickets = await this.getTicketsByPhone(phone);
+        if (myTickets.length === 0) {
+          await send('No tienes tickets registrados aún. ¿Puedo ayudarte en algo más?');
+        } else {
+          const list = this.formatTicketsListWithDate(myTickets);
+          await send(`Tus tickets:\n\n${list}\n\nResponde el número del ticket que deseas consultar:`);
+          await sessionRef.set(
+            { state: 'WAITING_TICKET_SELECTION_VIEW', pendingTickets: myTickets },
+            { merge: true },
+          );
+        }
       } else if (body === '3' || body === '4' || body === '5') {
         const tickets = await this.getTicketsByPhone(phone);
         if (tickets.length === 0) {
@@ -429,11 +473,45 @@ export class WhatsappService implements OnModuleInit {
           await sessionRef.set({ state: 'WAITING_TICKET_SELECTION_FINALIZE' }, { merge: true });
         }
       } else {
-        // Cualquier otro mensaje: mostrar menú
-        await send(MENU);
+        const msgs = await this.botConfig.getMessages().catch(() => null);
+        await send(msgs?.menu ?? MENU_FALLBACK);
       }
 
-    // ─── CREAR TICKET: Ciudad → Canal → Punto → Teléfono ────────────────────
+    // ─── FLUJO DINÁMICO DE CAMPOS ────────────────────────────────────────────
+    } else if (state === 'WAITING_FIELD') {
+      const fields = await this.botConfig.getFields();
+      const fieldIndex: number = typeof session.fieldIndex === 'number' ? session.fieldIndex : 0;
+      const fieldValues: Record<string, string> = session.fieldValues || {};
+
+      if (!body) {
+        if (fields[fieldIndex]) await send(fields[fieldIndex].label);
+        return;
+      }
+
+      const currentField = fields[fieldIndex];
+      if (!currentField) {
+        await send('Error de configuración. Escribe cualquier mensaje para volver al menú.');
+        await sessionRef.set({ state: 'IDLE' }, { merge: true });
+        return;
+      }
+
+      const value = currentField.normalize !== false ? normalizeText(body) : body.trim();
+      fieldValues[currentField.key] = value;
+
+      const nextIndex = fieldIndex + 1;
+      if (nextIndex < fields.length) {
+        await sessionRef.set({ fieldIndex: nextIndex, fieldValues, state: 'WAITING_FIELD' }, { merge: true });
+        await send(fields[nextIndex].label);
+      } else {
+        const msgs = await this.botConfig.getMessages().catch(() => null);
+        await sessionRef.set(
+          { state: 'WAITING_PHOTOS_AND_DESC', fieldValues, targetPhone: phone, tempPhotos: [] },
+          { merge: true },
+        );
+        await send(msgs?.photosPrompt ?? 'Sube unas fotos y añade una descripción para el ticket.');
+      }
+
+    // ─── CREAR TICKET: Ciudad → Canal → Punto (legacy) ───────────────────────
     } else if (state === 'WAITING_CITY') {
       if (!body) {
         await send('Por favor ingresa el nombre de la ciudad:');
@@ -461,15 +539,9 @@ export class WhatsappService implements OnModuleInit {
         await send('Por favor ingresa el nombre del punto de venta:');
         return;
       }
+      // El teléfono del reportante es el mismo número de WhatsApp del usuario
       await sessionRef.set(
-        { state: 'WAITING_PHONE_FOR_TICKET_CREATION', tempPunto: normalizeText(body), tempPhotos: [] },
-        { merge: true },
-      );
-      await send('Por favor ingresa tu número de celular:');
-
-    } else if (state === 'WAITING_PHONE_FOR_TICKET_CREATION') {
-      await sessionRef.set(
-        { state: 'WAITING_PHOTOS_AND_DESC', targetPhone: body },
+        { state: 'WAITING_PHOTOS_AND_DESC', tempPunto: normalizeText(body), tempPhotos: [], targetPhone: phone },
         { merge: true },
       );
       await send('Sube unas fotos y añade una descripción para el ticket.');
@@ -516,11 +588,20 @@ export class WhatsappService implements OnModuleInit {
           ? freshData.tempPhotos
           : tempPhotos;
 
-        const ciudad = (freshData.tempCity as string) || '';
-        const canal = (freshData.tempCanal as string) || '';
-        const punto = (freshData.tempPunto as string) || '';
+        // Soporte para flujo dinámico (fieldValues) y flujo legacy (tempCity/Canal/Punto)
+        const fieldValues: Record<string, string> = (freshData.fieldValues as Record<string, string>) || {};
+        const ciudad = fieldValues.ciudad || (freshData.tempCity as string) || '';
+        const canal = fieldValues.canal || (freshData.tempCanal as string) || '';
+        const punto = fieldValues.punto || (freshData.tempPunto as string) || '';
 
-        const ticketData = {
+        // Campos extra (los que no son ciudad/canal/punto)
+        const standardKeys = new Set(['ciudad', 'canal', 'punto']);
+        const extraFields: Record<string, string> = {};
+        Object.entries(fieldValues).forEach(([k, v]) => {
+          if (!standardKeys.has(k)) extraFields[k] = v;
+        });
+
+        const ticketData: Record<string, unknown> = {
           ticketNumber: `TKT-${Math.floor(Math.random() * 90000) + 10000}`,
           status: 'REPORTADO',
           ciudad,
@@ -530,22 +611,90 @@ export class WhatsappService implements OnModuleInit {
           novelty: { type: 'unknown', description: finalDescription },
           photos: { evidence: finalPhotos, repair: [], delivery: [] },
           timestamps: { createdAt: Date.now(), updatedAt: Date.now() },
+          ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
         };
         const docRef = await db.collection('tickets').add(ticketData);
         this.logger.log(
           `[${phone}] Ticket creado: ${ticketData.ticketNumber} (ID: ${docRef.id})`,
         );
-        await send(
-          `✅ Ticket *${ticketData.ticketNumber}* creado exitosamente.\n\n` +
-          `Te notificaremos cuando haya actualizaciones de estados.`,
+
+        // Upsert host: crea el documento solo si no existe
+        const hostRef = db.collection('hosts').doc(targetPhone);
+        const hostSnap = await hostRef.get();
+        if (!hostSnap.exists) {
+          await hostRef.set({ nombre: targetPhone, telefono: targetPhone, creadoEn: Date.now() });
+        }
+        const msgs = await this.botConfig.getMessages().catch(() => null);
+        const successMsg = interpolate(
+          msgs?.ticketCreated ?? '✅ Ticket *{ticketNumber}* creado exitosamente.\n\nTe notificaremos cuando haya actualizaciones de estados.',
+          { ticketNumber: String(ticketData.ticketNumber) },
         );
+        await send(successMsg);
         await sessionRef.set(
-          { state: 'IDLE', tempPhotos: [], targetPhone: null, tempCity: null, tempCanal: null, tempPunto: null },
+          { state: 'IDLE', tempPhotos: [], targetPhone: null, tempCity: null, tempCanal: null, tempPunto: null, fieldValues: null, fieldIndex: null },
           { merge: true },
         );
       }
 
-    // ─── VER ESTADO ──────────────────────────────────────────────────────────
+    // ─── VER TICKET: selección ───────────────────────────────────────────────
+    } else if (state === 'WAITING_TICKET_SELECTION_VIEW') {
+      const tickets: PendingTicket[] = session.pendingTickets || [];
+      const idx = parseInt(body) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= tickets.length) {
+        await send(`Por favor responde un número entre 1 y ${tickets.length}.`);
+        return;
+      }
+      const selected = tickets[idx];
+      await sessionRef.set(
+        { state: 'WAITING_VIEW_OPTION', pendingTicketData: selected },
+        { merge: true },
+      );
+      await send(
+        `Ticket *${selected.ticketNumber}* — ${selected.status}\n\n` +
+        `¿Qué deseas ver?\n1. Info del ticket\n2. Ver fotos`,
+      );
+
+    // ─── VER TICKET: opción info / fotos ────────────────────────────────────
+    } else if (state === 'WAITING_VIEW_OPTION') {
+      const ticket = session.pendingTicketData as PendingTicket;
+
+      if (body === '1') {
+        const dateStr = ticket.createdAt
+          ? new Date(ticket.createdAt).toLocaleDateString('es-CO')
+          : 'Sin fecha';
+        const info =
+          `📋 *${ticket.ticketNumber}*\n` +
+          `Estado: ${ticket.status}\n` +
+          `Fecha: ${dateStr}\n` +
+          (ticket.ciudad ? `Ciudad: ${ticket.ciudad}\n` : '') +
+          (ticket.canal ? `Canal: ${ticket.canal}\n` : '') +
+          (ticket.punto ? `Punto: ${ticket.punto}\n` : '') +
+          (ticket.description ? `Descripción: ${ticket.description}` : '');
+        await send(info);
+        await sessionRef.set({ state: 'IDLE', pendingTicketData: null, pendingTickets: null }, { merge: true });
+
+      } else if (body === '2') {
+        const evidencia = ticket.photos || [];
+        const reparacion = ticket.repairPhotos || [];
+        if (evidencia.length === 0 && reparacion.length === 0) {
+          await send('Este ticket no tiene fotos adjuntas.');
+        } else {
+          if (evidencia.length > 0) {
+            await send(`📷 Fotos de evidencia de *${ticket.ticketNumber}* (${evidencia.length}):`);
+            for (const url of evidencia) await sendPhoto(url);
+          }
+          if (reparacion.length > 0) {
+            await send(`🔧 Fotos de reparación (${reparacion.length}):`);
+            for (const url of reparacion) await sendPhoto(url);
+          }
+        }
+        await sessionRef.set({ state: 'IDLE', pendingTicketData: null, pendingTickets: null }, { merge: true });
+
+      } else {
+        await send('Opción no válida. Responde *1* para ver info o *2* para ver fotos.');
+      }
+
+    // ─── VER ESTADO (legacy) ─────────────────────────────────────────────────
     } else if (state === 'WAITING_PHONE_FOR_STATUS') {
       const tickets = await this.getTicketsByPhone(body);
       if (tickets.length === 0) {
