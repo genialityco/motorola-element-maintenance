@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BotConfigService, interpolate } from '../bot-config/bot-config.service';
-import { FieldValue } from 'firebase-admin/firestore';
+import { FieldValue, DocumentReference, DocumentData } from 'firebase-admin/firestore';
 
 type WhatsAppMessage = {
   from?: string;
@@ -425,12 +425,13 @@ export class WhatsappService implements OnModuleInit {
     // ─── IDLE ────────────────────────────────────────────────────────────────
     if (state === 'IDLE') {
       if (body === '1') {
-        const fields = await this.botConfig.getFields();
+        const allFields = await this.botConfig.getFields();
+        const fields = allFields.filter(f => f.source === 'bot');
         if (fields.length === 0) {
           await send('El sistema no tiene campos configurados para crear tickets. Contacta al administrador.');
           return;
         }
-        await send(fields[0].label);
+        await send(fields[0].question);
         await sessionRef.set(
           { state: 'WAITING_FIELD', fieldIndex: 0, fieldValues: {}, tempPhotos: [] },
           { merge: true },
@@ -479,19 +480,59 @@ export class WhatsappService implements OnModuleInit {
 
     // ─── FLUJO DINÁMICO DE CAMPOS ────────────────────────────────────────────
     } else if (state === 'WAITING_FIELD') {
-      const fields = await this.botConfig.getFields();
+      const allFields = await this.botConfig.getFields();
+      const fields = allFields.filter(f => f.source === 'bot');
       const fieldIndex: number = typeof session.fieldIndex === 'number' ? session.fieldIndex : 0;
       const fieldValues: Record<string, string> = session.fieldValues || {};
-
-      if (!body) {
-        if (fields[fieldIndex]) await send(fields[fieldIndex].label);
-        return;
-      }
 
       const currentField = fields[fieldIndex];
       if (!currentField) {
         await send('Error de configuración. Escribe cualquier mensaje para volver al menú.');
         await sessionRef.set({ state: 'IDLE' }, { merge: true });
+        return;
+      }
+
+      // Detectar si es campo de foto por tipo O por clave
+      const isPhotoField = currentField.type === 'photo' || currentField.key?.includes('photo');
+
+      // Si el campo es de tipo foto y llegó una foto, usarla directamente
+      if (isPhotoField && incomingPhotoUrl) {
+        fieldValues[currentField.key] = incomingPhotoUrl;
+        const nextIndex = fieldIndex + 1;
+        if (nextIndex < fields.length) {
+          await sessionRef.set({ fieldIndex: nextIndex, fieldValues, state: 'WAITING_FIELD' }, { merge: true });
+          await send(fields[nextIndex].question);
+        } else {
+          await this.createTicket(phone, phone, sessionRef, [incomingPhotoUrl], message.image?.caption || '', fieldValues, {}, send);
+        }
+        return;
+      }
+
+      // Si el campo es de tipo foto pero no llegó foto, pedir que envíe
+      if (isPhotoField && !incomingPhotoUrl) {
+        if (body === '0' && currentField.required === false) {
+          // Permitir saltar campos no requeridos
+          fieldValues[currentField.key] = '';
+          const nextIndex = fieldIndex + 1;
+          if (nextIndex < fields.length) {
+            await sessionRef.set({ fieldIndex: nextIndex, fieldValues, state: 'WAITING_FIELD' }, { merge: true });
+            await send(fields[nextIndex].question);
+          } else {
+            await sessionRef.set(
+              { state: 'WAITING_PHOTOS_AND_DESC', fieldValues, targetPhone: phone, tempPhotos: [] },
+              { merge: true },
+            );
+            await send('Por favor sube las fotos y confirma.');
+          }
+        } else {
+          await send(currentField.question);
+        }
+        return;
+      }
+
+      // Para campos de texto
+      if (!body) {
+        await send(fields[fieldIndex].question);
         return;
       }
 
@@ -501,14 +542,13 @@ export class WhatsappService implements OnModuleInit {
       const nextIndex = fieldIndex + 1;
       if (nextIndex < fields.length) {
         await sessionRef.set({ fieldIndex: nextIndex, fieldValues, state: 'WAITING_FIELD' }, { merge: true });
-        await send(fields[nextIndex].label);
+        await send(fields[nextIndex].question);
       } else {
-        const msgs = await this.botConfig.getMessages().catch(() => null);
         await sessionRef.set(
           { state: 'WAITING_PHOTOS_AND_DESC', fieldValues, targetPhone: phone, tempPhotos: [] },
           { merge: true },
         );
-        await send(msgs?.photosPrompt ?? 'Sube unas fotos y añade una descripción para el ticket.');
+        await send('Por favor sube las fotos y confirma.');
       }
 
     // ─── CREAR TICKET: Ciudad → Canal → Punto (legacy) ───────────────────────
@@ -554,85 +594,35 @@ export class WhatsappService implements OnModuleInit {
         ? latestSession.tempPhotos
         : [];
       const targetPhone: string = latestSession.targetPhone || session.targetPhone || phone;
-      let finalDescription = '';
-      let readyToCreate = false;
 
       if (incomingPhotoUrl) {
         tempPhotos = [...tempPhotos, incomingPhotoUrl];
-        this.logger.debug(
-          `[${phone}] Foto guardada. Total: ${tempPhotos.length}. URLs: ${tempPhotos.join(', ')}`,
-        );
-        await sessionRef.set(
-          { tempPhotos, state: 'WAITING_PHOTOS_AND_DESC', targetPhone },
-          { merge: true },
-        );
-        if (message.image?.caption) {
-          finalDescription = message.image.caption;
-          readyToCreate = true;
-        }
-      } else if (message.type === 'text' && body) {
-        finalDescription = body;
-        readyToCreate = true;
-      }
-
-      if (readyToCreate) {
-        if (!Array.isArray(tempPhotos)) tempPhotos = [];
-        this.logger.log(
-          `[${phone}] Creando ticket con ${tempPhotos.length} foto(s). Descripción: "${finalDescription}"`,
-        );
-
-        // Releer para tener los últimos tempPhotos al momento de crear
+        await sessionRef.set({ tempPhotos, state: 'WAITING_PHOTOS_AND_DESC', targetPhone }, { merge: true });
         const freshDoc = await sessionRef.get();
         const freshData = freshDoc.data() || {};
-        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos)
-          ? freshData.tempPhotos
-          : tempPhotos;
-
-        // Soporte para flujo dinámico (fieldValues) y flujo legacy (tempCity/Canal/Punto)
+        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos) ? freshData.tempPhotos : tempPhotos;
         const fieldValues: Record<string, string> = (freshData.fieldValues as Record<string, string>) || {};
-        const ciudad = fieldValues.ciudad || (freshData.tempCity as string) || '';
-        const canal = fieldValues.canal || (freshData.tempCanal as string) || '';
-        const punto = fieldValues.punto || (freshData.tempPunto as string) || '';
-
-        // Campos extra (los que no son ciudad/canal/punto)
-        const standardKeys = new Set(['ciudad', 'canal', 'punto']);
-        const extraFields: Record<string, string> = {};
-        Object.entries(fieldValues).forEach(([k, v]) => {
-          if (!standardKeys.has(k)) extraFields[k] = v;
-        });
-
-        const ticketData: Record<string, unknown> = {
-          ticketNumber: `TKT-${Math.floor(Math.random() * 90000) + 10000}`,
-          status: 'REPORTADO',
-          ciudad,
-          canal,
-          point: { id: punto.toLowerCase().replace(/\s+/g, '_') || 'unknown', name: punto || 'Sin punto' },
-          reporter: { phone: targetPhone, name: 'Usuario WhatsApp' },
-          novelty: { type: 'unknown', description: finalDescription },
-          photos: { evidence: finalPhotos, repair: [], delivery: [] },
-          timestamps: { createdAt: Date.now(), updatedAt: Date.now() },
-          ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
-        };
-        const docRef = await db.collection('tickets').add(ticketData);
-        this.logger.log(
-          `[${phone}] Ticket creado: ${ticketData.ticketNumber} (ID: ${docRef.id})`,
+        await this.createTicket(
+          phone, targetPhone, sessionRef, finalPhotos,
+          message.image?.caption || '',
+          fieldValues,
+          { tempCity: freshData.tempCity as string, tempCanal: freshData.tempCanal as string, tempPunto: freshData.tempPunto as string },
+          send,
         );
-
-        // Upsert host: crea el documento solo si no existe
-        const hostRef = db.collection('hosts').doc(targetPhone);
-        const hostSnap = await hostRef.get();
-        if (!hostSnap.exists) {
-          await hostRef.set({ nombre: targetPhone, telefono: targetPhone, creadoEn: Date.now() });
+      } else if (message.type === 'text' && body) {
+        if (tempPhotos.length === 0) {
+          await send('Por favor envía al menos una foto.');
+          return;
         }
-        const msgs = await this.botConfig.getMessages().catch(() => null);
-        const successMsg = interpolate(
-          msgs?.ticketCreated ?? '✅ Ticket *{ticketNumber}* creado exitosamente.\n\nTe notificaremos cuando haya actualizaciones de estados.',
-          { ticketNumber: String(ticketData.ticketNumber) },
-        );
-        await send(successMsg);
-        await sessionRef.set(
-          { state: 'IDLE', tempPhotos: [], targetPhone: null, tempCity: null, tempCanal: null, tempPunto: null, fieldValues: null, fieldIndex: null },
-          { merge: true },
+        const freshDoc = await sessionRef.get();
+        const freshData = freshDoc.data() || {};
+        const finalPhotos: string[] = Array.isArray(freshData.tempPhotos) ? freshData.tempPhotos : tempPhotos;
+        const fieldValues: Record<string, string> = (freshData.fieldValues as Record<string, string>) || {};
+        await this.createTicket(
+          phone, targetPhone, sessionRef, finalPhotos, body,
+          fieldValues,
+          { tempCity: freshData.tempCity as string, tempCanal: freshData.tempCanal as string, tempPunto: freshData.tempPunto as string },
+          send,
         );
       }
 
@@ -1024,6 +1014,62 @@ export class WhatsappService implements OnModuleInit {
       await sessionRef.set({ state: 'IDLE' }, { merge: true });
       await send('Operación cancelada. Escribe cualquier mensaje para volver al menú.');
     }
+  }
+
+  private async createTicket(
+    phone: string,
+    targetPhone: string,
+    sessionRef: DocumentReference<DocumentData>,
+    photos: string[],
+    description: string,
+    fieldValues: Record<string, string>,
+    legacyData: { tempCity?: string; tempCanal?: string; tempPunto?: string },
+    send: (msg: string) => Promise<void>,
+  ): Promise<void> {
+    const db = this.firebase.db;
+    this.logger.log(`[${phone}] Creando ticket con ${photos.length} foto(s). Descripción: "${description}"`);
+
+    const ciudad = fieldValues.ciudad || legacyData.tempCity || '';
+    const canal = fieldValues.canal || legacyData.tempCanal || '';
+    const punto = fieldValues.punto || legacyData.tempPunto || '';
+
+    const standardKeys = new Set(['ciudad', 'canal', 'punto', 'photos.repair']);
+    const extraFields: Record<string, string> = {};
+    Object.entries(fieldValues).forEach(([k, v]) => {
+      if (!standardKeys.has(k)) extraFields[k] = v;
+    });
+
+    const ticketData: Record<string, unknown> = {
+      ticketNumber: `TKT-${Math.floor(Math.random() * 90000) + 10000}`,
+      status: 'REPORTADO',
+      ciudad,
+      canal,
+      point: { id: punto.toLowerCase().replace(/\s+/g, '_') || 'unknown', name: punto || 'Sin punto' },
+      reporter: { phone: targetPhone, name: 'Usuario WhatsApp' },
+      novelty: { type: 'unknown', description },
+      photos: { evidence: photos, repair: [], delivery: [] },
+      timestamps: { createdAt: Date.now(), updatedAt: Date.now() },
+      ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
+    };
+    const docRef = await db.collection('tickets').add(ticketData);
+    this.logger.log(`[${phone}] Ticket creado: ${ticketData.ticketNumber} (ID: ${docRef.id})`);
+
+    const hostRef = db.collection('hosts').doc(targetPhone);
+    const hostSnap = await hostRef.get();
+    if (!hostSnap.exists) {
+      await hostRef.set({ nombre: targetPhone, telefono: targetPhone, creadoEn: Date.now() });
+    }
+
+    const msgs = await this.botConfig.getMessages().catch(() => null);
+    const successMsg = interpolate(
+      msgs?.ticketCreated ?? '✅ Ticket *{ticketNumber}* creado exitosamente.\n\nTe notificaremos cuando haya actualizaciones de estados.',
+      { ticketNumber: String(ticketData.ticketNumber) },
+    );
+    await send(successMsg);
+    await sessionRef.set(
+      { state: 'IDLE', tempPhotos: [], targetPhone: null, tempCity: null, tempCanal: null, tempPunto: null, fieldValues: null, fieldIndex: null },
+      { merge: true },
+    );
   }
 
   // Verifica el webhook de Meta (GET)

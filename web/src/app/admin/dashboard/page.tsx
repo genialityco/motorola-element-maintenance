@@ -21,18 +21,17 @@ const BACKEND_URL =
 
 // ── Bot Config types ───────────────────────────────────────────────────────────
 type BotMessages = {
-  menu: string; photosPrompt: string; ticketCreated: string;
+  menu: string; ticketCreated: string;
   statusChanged: string; reparadoMessage: string; noTickets: string;
   invalidField: string; cancelled: string; goodbye: string; viewTicketOptions: string;
 };
 type FieldType = 'string' | 'numeric' | 'date' | 'photo' | 'video';
 type FieldSource = 'bot' | 'admin' | 'auto';
-type BotField = { key: string; label: string; order: number; normalize: boolean; type: FieldType; source: FieldSource; required: boolean; }
+type BotField = { key: string; label: string; question: string; order: number; normalize: boolean; type: FieldType; source: FieldSource; required: boolean; visible?: boolean; }
 type StandardField = { key: string; label: string; type: FieldType; source: FieldSource; required: boolean; };;
 
 const DEFAULT_BOT_MESSAGES: BotMessages = {
   menu: 'Hola, a continuación te mostraré las diferentes funcionalidades que poseo:\n1. Para crear un ticket presiona 1\n2. Para ver el estado de tus tickets presiona 2\n3. Para editar un ticket presiona 3\n4. Para eliminar un ticket presiona 4\n5. Para finalizar un ticket presiona 5',
-  photosPrompt: 'Sube unas fotos y añade una descripción para el ticket.',
   ticketCreated: '✅ Ticket *{ticketNumber}* creado exitosamente.\n\nTe notificaremos cuando haya actualizaciones de estados.',
   statusChanged: 'El estado de su solicitud *{ticketNumber}* ha cambiado de "{prevStatus}" a "{newStatus}".',
   reparadoMessage: 'Estas son las evidencias de que su ticket *{ticketNumber}* con descripción "{description}" ha sido reparado:',
@@ -43,9 +42,13 @@ const DEFAULT_BOT_MESSAGES: BotMessages = {
   viewTicketOptions: '¿Qué deseas ver?\n1. Info del ticket\n2. Ver fotos',
 };
 const DEFAULT_BOT_FIELDS: BotField[] = [
-  { key: 'ciudad', label: '¿En qué ciudad se encuentra el punto de venta?', order: 0, normalize: true, type: 'string', source: 'bot', required: true },
-  { key: 'canal', label: '¿Cuál es el canal de venta? (ejemplo: Retail, Operador, Online):', order: 1, normalize: true, type: 'string', source: 'bot', required: true },
-  { key: 'punto', label: '¿Cuál es el nombre del punto de venta?', order: 2, normalize: true, type: 'string', source: 'bot', required: true },
+  { key: 'ciudad', label: 'Ciudad', question: '¿En qué ciudad se encuentra el punto de venta?', order: 0, normalize: true, type: 'string', source: 'bot', required: true, visible: true },
+  { key: 'canal', label: 'Canal', question: '¿Cuál es el canal de venta? (ejemplo: Retail, Operador, Online):', order: 1, normalize: true, type: 'string', source: 'bot', required: true, visible: true },
+  { key: 'punto', label: 'Punto de Venta', question: '¿Cuál es el nombre del punto de venta?', order: 2, normalize: true, type: 'string', source: 'bot', required: true, visible: true },
+  { key: 'novelty.type', label: 'Tipo de Novedad', question: 'Tipo de Novedad', order: 3, normalize: false, type: 'string', source: 'bot', required: false, visible: true },
+  { key: 'novelty.description', label: 'Descripción / Novedad', question: 'Descripción / Novedad', order: 4, normalize: false, type: 'string', source: 'bot', required: true, visible: true },
+  { key: 'photos.evidence', label: 'Fotos de Evidencia', question: 'Fotos de Evidencia', order: 5, normalize: false, type: 'photo', source: 'bot', required: false, visible: false },
+  { key: 'photos.repair', label: 'Fotos de Reparación', question: 'Fotos de Reparación', order: 6, normalize: false, type: 'photo', source: 'admin', required: false, visible: false },
 ];
 
 const STANDARD_FIELDS: StandardField[] = [
@@ -53,10 +56,6 @@ const STANDARD_FIELDS: StandardField[] = [
   { key: 'status',                label: 'Estado',                  type: 'string',  source: 'admin', required: true  },
   { key: 'reporter.name',         label: 'Nombre Reportante',       type: 'string',  source: 'auto',  required: true  },
   { key: 'reporter.phone',        label: 'Teléfono Reportante',     type: 'string',  source: 'auto',  required: true  },
-  { key: 'novelty.type',          label: 'Tipo de Novedad',         type: 'string',  source: 'bot',   required: false },
-  { key: 'novelty.description',   label: 'Descripción / Novedad',   type: 'string',  source: 'bot',   required: true  },
-  { key: 'photos.evidence',       label: 'Fotos de Evidencia',      type: 'photo',   source: 'bot',   required: false },
-  { key: 'photos.repair',         label: 'Fotos de Reparación',     type: 'photo',   source: 'admin', required: false },
   { key: 'photos.delivery',       label: 'Fotos de Entrega',        type: 'photo',   source: 'admin', required: false },
   { key: 'budget.estimatedValue', label: 'Presupuesto Estimado',    type: 'numeric', source: 'admin', required: false },
   { key: 'budget.approved',       label: 'Presupuesto Aprobado',    type: 'string',  source: 'admin', required: false },
@@ -71,7 +70,6 @@ const SOURCE_LABELS: Record<FieldSource, string> = { bot: 'Chat (Bot)', admin: '
 const SOURCE_COLORS: Record<FieldSource, string> = { bot: 'teal', admin: 'indigo', auto: 'gray' };
 const MESSAGE_META: Array<{ key: keyof BotMessages; label: string; hint?: string }> = [
   { key: 'menu', label: 'Menú principal del bot' },
-  { key: 'photosPrompt', label: 'Prompt para subir fotos y descripción' },
   { key: 'ticketCreated', label: 'Ticket creado exitosamente', hint: '{ticketNumber}' },
   { key: 'statusChanged', label: 'Cambio de estado', hint: '{ticketNumber}, {prevStatus}, {newStatus}' },
   { key: 'reparadoMessage', label: 'Ticket reparado (con fotos de reparación)', hint: '{ticketNumber}, {description}' },
@@ -128,9 +126,16 @@ export default function DashboardPage() {
   const [addFieldOpen, setAddFieldOpen] = useState(false);
   const [newFieldKey, setNewFieldKey] = useState('');
   const [newFieldLabel, setNewFieldLabel] = useState('');
+  const [newFieldQuestion, setNewFieldQuestion] = useState('');
   const [newFieldType, setNewFieldType] = useState<FieldType>('string');
   const [newFieldSource, setNewFieldSource] = useState<FieldSource>('bot');
   const [newFieldRequired, setNewFieldRequired] = useState(false);
+
+  // Edit field modal state
+  const [editFieldOpen, setEditFieldOpen] = useState(false);
+  const [editingFieldIdx, setEditingFieldIdx] = useState<number | null>(null);
+  const [editFieldLabel, setEditFieldLabel] = useState('');
+  const [editFieldQuestion, setEditFieldQuestion] = useState('');
 
   // Hosts state
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
@@ -177,7 +182,18 @@ export default function DashboardPage() {
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'bot_config', 'ticket_fields'), (snap) => {
       const fields = snap.exists() ? (snap.data()?.fields as BotField[] | undefined) : undefined;
-      if (fields && fields.length > 0) setConfigFields([...fields].sort((a, b) => a.order - b.order));
+      
+      let toUse: BotField[];
+      if (fields && fields.length > 0) {
+        // Merge con defaults para asegurar que nuevos campos se incluyan
+        const savedKeys = new Set(fields.map(f => f.key));
+        const newDefaults = DEFAULT_BOT_FIELDS.filter(df => !savedKeys.has(df.key));
+        toUse = [...fields, ...newDefaults];
+      } else {
+        toUse = DEFAULT_BOT_FIELDS;
+      }
+      
+      setConfigFields([...toUse].sort((a, b) => a.order - b.order));
     }, () => {});
     return () => unsub();
   }, []);
@@ -188,6 +204,11 @@ export default function DashboardPage() {
     hosts.forEach(h => m.set(h.telefono, h.nombre));
     return m;
   }, [hosts]);
+
+  // Campos visibles en la tabla
+  const visibleFields = useMemo(() => {
+    return configFields.filter(f => f.visible !== false);
+  }, [configFields]);
 
   // ── Tickets filters / sort ─────────────────────────────────────────────────
 
@@ -355,17 +376,50 @@ export default function DashboardPage() {
     setConfigFields(prev => prev.filter((_, i) => i !== idx));
   };
 
+  const openEditField = (idx: number) => {
+    const field = configFields[idx];
+    if (!field) return;
+    setEditingFieldIdx(idx);
+    setEditFieldLabel(field.label);
+    setEditFieldQuestion(field.question);
+    setEditFieldOpen(true);
+  };
+
+  const saveEditField = () => {
+    if (editingFieldIdx === null || !editFieldLabel.trim() || !editFieldQuestion.trim()) return;
+    const updated = [...configFields];
+    updated[editingFieldIdx] = {
+      ...updated[editingFieldIdx],
+      label: editFieldLabel.trim(),
+      question: editFieldQuestion.trim(),
+    };
+    setConfigFields(updated);
+    setEditFieldOpen(false);
+    setEditingFieldIdx(null);
+    setEditFieldLabel('');
+    setEditFieldQuestion('');
+  };
+
+  const cancelEditField = () => {
+    setEditFieldOpen(false);
+    setEditingFieldIdx(null);
+    setEditFieldLabel('');
+    setEditFieldQuestion('');
+  };
+
   const addField = () => {
     const key = newFieldKey.trim().toLowerCase().replace(/\s+/g, '_');
-    if (!key || !newFieldLabel.trim()) return;
+    if (!key || !newFieldLabel.trim() || !newFieldQuestion.trim()) return;
     if (configFields.some(f => f.key === key)) return;
     setConfigFields(prev => [...prev, {
-      key, label: newFieldLabel.trim(), order: prev.length,
+      key, label: newFieldLabel.trim(), question: newFieldQuestion.trim(), order: prev.length,
       normalize: newFieldType === 'string', type: newFieldType,
       source: newFieldSource, required: newFieldRequired,
+      visible: true,
     }]);
     setNewFieldKey('');
     setNewFieldLabel('');
+    setNewFieldQuestion('');
     setNewFieldType('string');
     setNewFieldSource('bot');
     setNewFieldRequired(false);
@@ -433,11 +487,11 @@ export default function DashboardPage() {
                   </Group>
                 </Table.Th>
 
-                {configFields.map(field => (
+                {visibleFields.map(field => (
                   <Table.Th key={field.key}>
                     <Group gap={4} wrap="nowrap">
                       <Group gap={4} wrap="nowrap" style={{ cursor: 'pointer' }} onClick={() => handleSort(field.key)}>
-                        <Text size="sm" fw={600}>{field.key.charAt(0).toUpperCase() + field.key.slice(1)}</Text>
+                        <Text size="sm" fw={600}>{field.label || field.key.charAt(0).toUpperCase() + field.key.slice(1)}</Text>
                         <SortIcon col={field.key} />
                       </Group>
                       <Popover withArrow shadow="md" position="bottom-start" withinPortal>
@@ -447,7 +501,7 @@ export default function DashboardPage() {
                           </ActionIcon>
                         </Popover.Target>
                         <Popover.Dropdown>
-                          <Text size="xs" fw={700} mb="xs">{field.key.charAt(0).toUpperCase() + field.key.slice(1)}</Text>
+                          <Text size="xs" fw={700} mb="xs">{field.label || field.key.charAt(0).toUpperCase() + field.key.slice(1)}</Text>
                           {(uniqueFieldValues[field.key] || []).length === 0
                             ? <Text size="xs" c="dimmed">Sin datos</Text>
                             : <Checkbox.Group value={filterFields[field.key] || []} onChange={(vals) => setFieldFilter(field.key, vals)}>
@@ -472,46 +526,6 @@ export default function DashboardPage() {
                 </Table.Th>
 
                 <Table.Th>
-                  <Text size="sm" fw={600}>Novedad</Text>
-                </Table.Th>
-
-                <Table.Th>
-                  <Group gap={4} wrap="nowrap">
-                    <Group gap={4} wrap="nowrap" style={{ cursor: 'pointer' }} onClick={() => handleSort('estado')}>
-                      <Text size="sm" fw={600}>Estado</Text>
-                      <SortIcon col="estado" />
-                    </Group>
-                    <Popover withArrow shadow="md" position="bottom-start" withinPortal>
-                      <Popover.Target>
-                        <ActionIcon size="xs" variant="subtle" color={filterEstados.length ? 'blue' : 'gray'}>
-                          <IconFilter size={13} />
-                        </ActionIcon>
-                      </Popover.Target>
-                      <Popover.Dropdown>
-                        <Text size="xs" fw={700} mb="xs">Estado</Text>
-                        <Checkbox.Group value={filterEstados} onChange={withPageReset(setFilterEstados)}>
-                          <Stack gap={6}>
-                            {ALL_STATUSES.map(s => (
-                              <Checkbox
-                                key={s}
-                                value={s}
-                                size="xs"
-                                label={<Badge size="xs" color={STATUS_COLORS[s] || 'gray'}>{s}</Badge>}
-                              />
-                            ))}
-                          </Stack>
-                        </Checkbox.Group>
-                        {filterEstados.length > 0 && (
-                          <Button size="xs" variant="subtle" color="red" mt="xs" onClick={() => withPageReset(setFilterEstados)([])}>
-                            Limpiar
-                          </Button>
-                        )}
-                      </Popover.Dropdown>
-                    </Popover>
-                  </Group>
-                </Table.Th>
-
-                <Table.Th>
                   <Text size="sm" fw={600}>Acciones</Text>
                 </Table.Th>
               </Table.Tr>
@@ -525,15 +539,11 @@ export default function DashboardPage() {
                       ? new Date(ticket.timestamps.createdAt).toLocaleDateString('es-CO')
                       : 'Fecha N/A'}
                   </Table.Td>
-                  {configFields.map(field => (
+                  {visibleFields.map(field => (
                     <Table.Td key={field.key}>{getFieldValue(ticket, field.key) || '—'}</Table.Td>
                   ))}
                   <Table.Td>
                     {hostsMap.get(ticket.reporter?.phone) || ticket.reporter?.name || ticket.reporter?.phone}
-                  </Table.Td>
-                  <Table.Td>{ticket.novelty?.description || ticket.novelty?.type}</Table.Td>
-                  <Table.Td>
-                    <Badge color={STATUS_COLORS[ticket.status] || 'blue'}>{ticket.status}</Badge>
                   </Table.Td>
                   <Table.Td>
                     <Button component={Link} href={`/admin/dashboard/tickets/${ticket.id}`} size="xs" variant="light">
@@ -544,7 +554,7 @@ export default function DashboardPage() {
               ))}
               {paginated.length === 0 && (
                 <Table.Tr>
-                  <Table.Td colSpan={6 + configFields.length} ta="center" c="dimmed">
+                  <Table.Td colSpan={4 + visibleFields.length} ta="center" c="dimmed">
                     No hay tickets para estos filtros.
                   </Table.Td>
                 </Table.Tr>
@@ -760,12 +770,11 @@ export default function DashboardPage() {
               <Table withTableBorder withColumnBorders mb="lg" style={{ tableLayout: 'fixed' }}>
                 <Table.Thead>
                   <Table.Tr>
-                    <Table.Th style={{ width: 110 }}>Campo</Table.Th>
-                    <Table.Th>Pregunta / Etiqueta</Table.Th>
-                    <Table.Th style={{ width: 130 }}>Tipo de dato</Table.Th>
+                    <Table.Th>Etiqueta</Table.Th>
                     <Table.Th style={{ width: 140 }}>Origen</Table.Th>
                     <Table.Th style={{ width: 85 }}>Requerido</Table.Th>
                     <Table.Th style={{ width: 90 }}>Normalizar</Table.Th>
+                    <Table.Th style={{ width: 100 }}>Visible</Table.Th>
                     <Table.Th style={{ width: 70 }}>Orden</Table.Th>
                     <Table.Th style={{ width: 40 }}></Table.Th>
                   </Table.Tr>
@@ -774,38 +783,7 @@ export default function DashboardPage() {
                   {configFields.map((field, idx) => (
                     <Table.Tr key={field.key}>
                       <Table.Td>
-                        <Badge variant="outline" color="blue" size="sm">{field.key}</Badge>
-                      </Table.Td>
-                      <Table.Td>
-                        <TextInput
-                          value={field.label}
-                          onChange={(e) => {
-                            const updated = [...configFields];
-                            updated[idx] = { ...field, label: e.currentTarget.value };
-                            setConfigFields(updated);
-                          }}
-                          size="xs"
-                        />
-                      </Table.Td>
-                      <Table.Td>
-                        <Select
-                          value={field.type ?? 'string'}
-                          onChange={(val) => {
-                            if (!val) return;
-                            const updated = [...configFields];
-                            updated[idx] = { ...field, type: val as FieldType };
-                            setConfigFields(updated);
-                          }}
-                          data={[
-                            { value: 'string',  label: 'Texto' },
-                            { value: 'numeric', label: 'Numérico' },
-                            { value: 'date',    label: 'Fecha' },
-                            { value: 'photo',   label: 'Foto(s)' },
-                            { value: 'video',   label: 'Video(s)' },
-                          ]}
-                          size="xs"
-                          allowDeselect={false}
-                        />
+                        <Text size="sm" fw={500}>{field.label}</Text>
                       </Table.Td>
                       <Table.Td>
                         <Select
@@ -847,6 +825,17 @@ export default function DashboardPage() {
                           }}
                         />
                       </Table.Td>
+                      <Table.Td style={{ textAlign: 'center' }}>
+                        <Switch
+                          size="xs"
+                          checked={field.visible ?? true}
+                          onChange={(e) => {
+                            const updated = [...configFields];
+                            updated[idx] = { ...field, visible: e.currentTarget.checked };
+                            setConfigFields(updated);
+                          }}
+                        />
+                      </Table.Td>
                       <Table.Td>
                         <Group gap={2} wrap="nowrap">
                           <Tooltip label="Subir" withArrow>
@@ -858,15 +847,22 @@ export default function DashboardPage() {
                         </Group>
                       </Table.Td>
                       <Table.Td>
-                        <Tooltip label="Eliminar campo" withArrow>
-                          <ActionIcon size="xs" color="red" variant="subtle" onClick={() => deleteField(idx)}>✕</ActionIcon>
-                        </Tooltip>
+                        <Group gap={4}>
+                          <Tooltip label="Editar" withArrow>
+                            <ActionIcon size="xs" color="blue" variant="subtle" onClick={() => openEditField(idx)}>
+                              <IconEdit size={14} />
+                            </ActionIcon>
+                          </Tooltip>
+                          <Tooltip label="Eliminar campo" withArrow>
+                            <ActionIcon size="xs" color="red" variant="subtle" onClick={() => deleteField(idx)}>✕</ActionIcon>
+                          </Tooltip>
+                        </Group>
                       </Table.Td>
                     </Table.Tr>
                   ))}
                   {configFields.length === 0 && (
                     <Table.Tr>
-                      <Table.Td colSpan={8} ta="center" c="dimmed" py="md">
+                      <Table.Td colSpan={7} ta="center" c="dimmed" py="md">
                         No hay campos configurables. Agrega uno con el botón de arriba.
                       </Table.Td>
                     </Table.Tr>
@@ -880,7 +876,7 @@ export default function DashboardPage() {
       </Tabs>
 
       {/* ── Modal: Agregar campo ──────────────────────────────────────────────── */}
-      <Modal opened={addFieldOpen} onClose={() => setAddFieldOpen(false)} title="Agregar campo" size="sm" centered>
+      <Modal opened={addFieldOpen} onClose={() => setAddFieldOpen(false)} title="Agregar campo" size="md" centered>
         <Stack>
           <TextInput
             label="Clave (identificador)"
@@ -890,10 +886,16 @@ export default function DashboardPage() {
             onChange={(e) => setNewFieldKey(e.currentTarget.value)}
           />
           <TextInput
-            label="Pregunta / Etiqueta"
-            placeholder="ej: ¿Cuál es el número de serie del equipo?"
+            label="Etiqueta (se muestra en tabla)"
+            placeholder="ej: Número de Serie"
             value={newFieldLabel}
             onChange={(e) => setNewFieldLabel(e.currentTarget.value)}
+          />
+          <TextInput
+            label="Pregunta (pregunta del bot)"
+            placeholder="ej: ¿Cuál es el número de serie del equipo?"
+            value={newFieldQuestion}
+            onChange={(e) => setNewFieldQuestion(e.currentTarget.value)}
           />
           <Select
             label="Tipo de dato"
@@ -926,7 +928,61 @@ export default function DashboardPage() {
           />
           <Group justify="flex-end" mt="xs">
             <Button variant="subtle" onClick={() => setAddFieldOpen(false)}>Cancelar</Button>
-            <Button onClick={addField} disabled={!newFieldKey.trim() || !newFieldLabel.trim()}>Agregar</Button>
+            <Button onClick={addField} disabled={!newFieldKey.trim() || !newFieldLabel.trim() || !newFieldQuestion.trim()}>Agregar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* ── Modal: Editar campo ────────────────────────────────────────────── */}
+      <Modal opened={editFieldOpen} onClose={cancelEditField} title="Editar Campo" size="md" centered>
+        <Stack>
+          {editingFieldIdx !== null && configFields[editingFieldIdx] && (
+            <Stack gap="xs" pb="md" style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}>
+              <div>
+                <Text size="xs" fw={600} c="dimmed">Campo</Text>
+                <Badge variant="outline" color="blue" size="sm" mt={4}>
+                  {configFields[editingFieldIdx].key}
+                </Badge>
+              </div>
+              <Group gap="xs" grow>
+                <div>
+                  <Text size="xs" fw={600} c="dimmed">Tipo de dato</Text>
+                  <Badge size="xs" color={TYPE_COLORS[configFields[editingFieldIdx].type] || 'gray'} mt={4}>
+                    {TYPE_LABELS[configFields[editingFieldIdx].type] || configFields[editingFieldIdx].type}
+                  </Badge>
+                </div>
+                <div>
+                  <Text size="xs" fw={600} c="dimmed">Origen</Text>
+                  <Badge size="xs" color={SOURCE_COLORS[configFields[editingFieldIdx].source] || 'gray'} mt={4}>
+                    {SOURCE_LABELS[configFields[editingFieldIdx].source] || configFields[editingFieldIdx].source}
+                  </Badge>
+                </div>
+                <div>
+                  <Text size="xs" fw={600} c="dimmed">Requerido</Text>
+                  <Badge size="xs" color={configFields[editingFieldIdx].required ? 'red' : 'gray'} mt={4}>
+                    {configFields[editingFieldIdx].required ? 'Sí' : 'No'}
+                  </Badge>
+                </div>
+              </Group>
+            </Stack>
+          )}
+          <TextInput
+            label="Etiqueta (para tabla)"
+            placeholder="Etiqueta para tabla"
+            value={editFieldLabel}
+            onChange={(e) => setEditFieldLabel(e.currentTarget.value)}
+          />
+          <Textarea
+            label="Pregunta (para bot)"
+            placeholder="Pregunta del bot"
+            value={editFieldQuestion}
+            onChange={(e) => setEditFieldQuestion(e.currentTarget.value)}
+            autosize
+            minRows={2}
+          />
+          <Group justify="flex-end" mt="xs">
+            <Button variant="subtle" onClick={cancelEditField}>Cancelar</Button>
+            <Button onClick={saveEditField} disabled={!editFieldLabel.trim() || !editFieldQuestion.trim()}>Guardar</Button>
           </Group>
         </Stack>
       </Modal>

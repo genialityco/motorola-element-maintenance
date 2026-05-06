@@ -3,7 +3,6 @@ import { FirebaseService } from '../firebase/firebase.service';
 
 export interface BotMessages {
   menu: string;
-  photosPrompt: string;
   ticketCreated: string;
   statusChanged: string;
   reparadoMessage: string;
@@ -17,8 +16,13 @@ export interface BotMessages {
 export interface TicketField {
   key: string;
   label: string;
+  question: string;
   order: number;
   normalize: boolean;
+  visible?: boolean;
+  type?: 'string' | 'numeric' | 'date' | 'photo' | 'video';
+  source?: 'bot' | 'admin' | 'auto';
+  required?: boolean;
 }
 
 export const DEFAULT_MESSAGES: BotMessages = {
@@ -29,7 +33,6 @@ export const DEFAULT_MESSAGES: BotMessages = {
     '3. Para editar un ticket presiona 3\n' +
     '4. Para eliminar un ticket presiona 4\n' +
     '5. Para finalizar un ticket presiona 5',
-  photosPrompt: 'Sube unas fotos y añade una descripción para el ticket.',
   ticketCreated:
     '✅ Ticket *{ticketNumber}* creado exitosamente.\n\nTe notificaremos cuando haya actualizaciones de estados.',
   statusChanged:
@@ -44,9 +47,13 @@ export const DEFAULT_MESSAGES: BotMessages = {
 };
 
 export const DEFAULT_FIELDS: TicketField[] = [
-  { key: 'ciudad', label: '¿En qué ciudad se encuentra el punto de venta?', order: 0, normalize: true },
-  { key: 'canal', label: '¿Cuál es el canal de venta? (ejemplo: Retail, Operador, Online):', order: 1, normalize: true },
-  { key: 'punto', label: '¿Cuál es el nombre del punto de venta?', order: 2, normalize: true },
+  { key: 'ciudad', label: 'Ciudad', question: '¿En qué ciudad se encuentra el punto de venta?', order: 0, normalize: true, visible: true },
+  { key: 'canal', label: 'Canal', question: '¿Cuál es el canal de venta? (ejemplo: Retail, Operador, Online):', order: 1, normalize: true, visible: true },
+  { key: 'punto', label: 'Punto de Venta', question: '¿Cuál es el nombre del punto de venta?', order: 2, normalize: true, visible: true },
+  { key: 'novelty.type', label: 'Tipo de Novedad', question: 'Tipo de Novedad', order: 3, normalize: false, visible: true },
+  { key: 'novelty.description', label: 'Descripción / Novedad', question: 'Descripción / Novedad', order: 4, normalize: false, visible: true },
+  { key: 'photos.evidence', label: 'Fotos de Evidencia', question: 'Fotos de Evidencia', order: 5, normalize: false, visible: false },
+  { key: 'photos.repair', label: 'Fotos de Reparación', question: 'Fotos de Reparación', order: 6, normalize: false, visible: false },
 ];
 
 @Injectable()
@@ -82,7 +89,16 @@ export class BotConfigService {
 
     const snap = await this.firebase.db.collection('bot_config').doc('ticket_fields').get();
     const fields = snap.exists ? (snap.data()?.fields as TicketField[] | undefined) : undefined;
-    this.fieldsCache = (fields && fields.length > 0) ? [...fields].sort((a, b) => a.order - b.order) : DEFAULT_FIELDS;
+    
+    if (fields && fields.length > 0) {
+      // Merge con defaults para asegurar que nuevos campos se incluyan
+      const savedKeys = new Set(fields.map(f => f.key));
+      const newDefaults = DEFAULT_FIELDS.filter(df => !savedKeys.has(df.key));
+      this.fieldsCache = [...fields, ...newDefaults].sort((a, b) => a.order - b.order);
+    } else {
+      this.fieldsCache = DEFAULT_FIELDS;
+    }
+    
     this.cacheExpiry = Date.now() + 60_000;
     return this.fieldsCache;
   }
