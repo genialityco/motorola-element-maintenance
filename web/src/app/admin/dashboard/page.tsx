@@ -97,14 +97,17 @@ const STATUS_COLORS: Record<string, string> = {
   REPARADO: 'teal',
   ENTREGADO: 'green',
   FINALIZADO: 'green',
+  ARCHIVADO: 'gray',
 };
 
-const ALL_STATUSES = ['REPORTADO', 'REVISION', 'EN_REPARACION', 'REPARADO', 'ENTREGADO', 'FINALIZADO'];
+const ALL_STATUSES = ['REPORTADO', 'REVISION', 'EN_REPARACION', 'REPARADO', 'ENTREGADO'];
+const ACTIVE_TICKET_STATUSES = new Set(['REPORTADO', 'REVISION', 'EN_REPARACION', 'REPARADO', 'ENTREGADO']);
 
 export default function DashboardPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>('tickets');
+  const [ticketSubTab, setTicketSubTab] = useState<string | null>('activos');
 
   // Tickets state
   const [sortCol, setSortCol] = useState<SortCol>('createdAt');
@@ -247,6 +250,11 @@ export default function DashboardPage() {
 
   const filtered = useMemo(() => {
     return tickets.filter(t => {
+      // Filtrar por subtab
+      if (ticketSubTab === 'activos' && !ACTIVE_TICKET_STATUSES.has(t.status)) return false;
+      if (ticketSubTab === 'archivados' && t.status !== 'ARCHIVADO') return false;
+      if (ticketSubTab === 'finalizados' && t.status !== 'FINALIZADO') return false;
+
       for (const [key, vals] of Object.entries(filterFields)) {
         if (vals.length && !vals.includes(getFieldValue(t, key))) return false;
       }
@@ -261,7 +269,7 @@ export default function DashboardPage() {
       }
       return true;
     });
-  }, [tickets, filterFields, filterEstados, filterFechaFrom, filterFechaTo]);
+  }, [tickets, ticketSubTab, filterFields, filterEstados, filterFechaFrom, filterFechaTo]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -464,12 +472,35 @@ export default function DashboardPage() {
 
         {/* ── TAB TICKETS ─────────────────────────────────────────────────── */}
         <Tabs.Panel value="tickets">
-          <Group justify="space-between" mb="xl">
+          <Group justify="space-between" mb="md">
             <Title order={2}>Gestor de Tickets</Title>
             <Button onClick={exportToExcel} variant="light" color="green">
               Exportar a Excel
             </Button>
           </Group>
+
+          <Tabs value={ticketSubTab} onChange={(v) => { setTicketSubTab(v); setPage(1); }} mb="lg">
+            <Tabs.List>
+              <Tabs.Tab value="activos">
+                Tickets
+                <Badge size="xs" ml={6} color="blue" variant="light">
+                  {tickets.filter(t => ACTIVE_TICKET_STATUSES.has(t.status)).length}
+                </Badge>
+              </Tabs.Tab>
+              <Tabs.Tab value="archivados">
+                Archivados
+                <Badge size="xs" ml={6} color="gray" variant="light">
+                  {tickets.filter(t => t.status === 'ARCHIVADO').length}
+                </Badge>
+              </Tabs.Tab>
+              <Tabs.Tab value="finalizados">
+                Finalizados
+                <Badge size="xs" ml={6} color="green" variant="light">
+                  {tickets.filter(t => t.status === 'FINALIZADO').length}
+                </Badge>
+              </Tabs.Tab>
+            </Tabs.List>
+          </Tabs>
 
           <Table striped highlightOnHover style={{ tableLayout: 'auto' }}>
             <Table.Thead>
@@ -492,6 +523,37 @@ export default function DashboardPage() {
                         <IconFilter size={13} />
                       </ActionIcon>
                     </Tooltip>
+                  </Group>
+                </Table.Th>
+
+                <Table.Th>
+                  <Group gap={4} wrap="nowrap">
+                    <Group gap={4} wrap="nowrap" style={{ cursor: 'pointer' }} onClick={() => handleSort('estado')}>
+                      <Text size="sm" fw={600}>Estado</Text>
+                      <SortIcon col="estado" />
+                    </Group>
+                    <Popover withArrow shadow="md" position="bottom-start" withinPortal>
+                      <Popover.Target>
+                        <ActionIcon size="xs" variant="subtle" color={filterEstados.length > 0 ? 'blue' : 'gray'}>
+                          <IconFilter size={13} />
+                        </ActionIcon>
+                      </Popover.Target>
+                      <Popover.Dropdown>
+                        <Text size="xs" fw={700} mb="xs">Estado</Text>
+                        <Checkbox.Group value={filterEstados} onChange={withPageReset(setFilterEstados)}>
+                          <Stack gap={6}>
+                            {ALL_STATUSES.map(s => (
+                              <Checkbox key={s} value={s} label={s} size="xs" />
+                            ))}
+                          </Stack>
+                        </Checkbox.Group>
+                        {filterEstados.length > 0 && (
+                          <Button size="xs" variant="subtle" color="red" mt="xs" onClick={() => { setFilterEstados([]); setPage(1); }}>
+                            Limpiar
+                          </Button>
+                        )}
+                      </Popover.Dropdown>
+                    </Popover>
                   </Group>
                 </Table.Th>
 
@@ -547,6 +609,9 @@ export default function DashboardPage() {
                       ? new Date(ticket.timestamps.createdAt).toLocaleDateString('es-CO')
                       : 'Fecha N/A'}
                   </Table.Td>
+                  <Table.Td>
+                    <Badge size="sm" color={STATUS_COLORS[ticket.status] || 'gray'}>{ticket.status}</Badge>
+                  </Table.Td>
                   {visibleFields.map(field => (
                     <Table.Td key={field.key}>{getFieldValue(ticket, field.key) || '—'}</Table.Td>
                   ))}
@@ -562,7 +627,7 @@ export default function DashboardPage() {
               ))}
               {paginated.length === 0 && (
                 <Table.Tr>
-                  <Table.Td colSpan={4 + visibleFields.length} ta="center" c="dimmed">
+                  <Table.Td colSpan={5 + visibleFields.length} ta="center" c="dimmed">
                     No hay tickets para estos filtros.
                   </Table.Td>
                 </Table.Tr>

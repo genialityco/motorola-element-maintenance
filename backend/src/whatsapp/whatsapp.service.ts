@@ -47,12 +47,13 @@ const MENU_FALLBACK =
   `4. Para eliminar un ticket presiona 4\n` +
   `5. Para finalizar un ticket presiona 5`;
 
-// Capitaliza la primera letra de cada palabra, preservando el resto
+// Elimina tildes/diacríticos y convierte a mayúsculas para consistencia de datos
 function normalizeText(text: string): string {
   return text
     .trim()
-    .toLowerCase()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toUpperCase();
 }
 
 @Injectable()
@@ -87,7 +88,7 @@ export class WhatsappService implements OnModuleInit {
             const prevStatus = this.ticketStatusCache.get(ticketId);
             this.ticketStatusCache.set(ticketId, newStatus);
 
-            if (prevStatus && prevStatus !== newStatus) {
+            if (prevStatus && prevStatus !== newStatus && newStatus !== 'ARCHIVADO') {
               const rawPhone = data.reporter?.phone as string;
               const phone = rawPhone ? this.normalizePhoneForWhatsApp(rawPhone) : '';
               if (phone) {
@@ -255,8 +256,13 @@ export class WhatsappService implements OnModuleInit {
 
   private formatTicketsList(tickets: PendingTicket[]): string {
     return tickets
-      .map((t, i) => `${i + 1}. *${t.ticketNumber}* — Estado: ${t.status}`)
-      .join('\n');
+      .map((t, i) => {
+        const lines = [`${i + 1}. *${t.ticketNumber}*`];
+        if (t.punto) lines.push(`   Punto de venta: ${t.punto}`);
+        lines.push(`   Estado: ${t.status}`);
+        return lines.join('\n');
+      })
+      .join('\n\n');
   }
 
   private formatTicketsListWithDate(tickets: PendingTicket[]): string {
@@ -265,7 +271,10 @@ export class WhatsappService implements OnModuleInit {
         const dateStr = t.createdAt
           ? new Date(t.createdAt).toLocaleDateString('es-CO')
           : 'Sin fecha';
-        return `${i + 1}. *${t.ticketNumber}*\n   Fecha: ${dateStr}\n   Estado: ${t.status}`;
+        const lines = [`${i + 1}. *${t.ticketNumber}*`, `   Fecha: ${dateStr}`];
+        if (t.punto) lines.push(`   Punto de venta: ${t.punto}`);
+        lines.push(`   Estado: ${t.status}`);
+        return lines.join('\n');
       })
       .join('\n\n');
   }
@@ -275,21 +284,23 @@ export class WhatsappService implements OnModuleInit {
       .collection('tickets')
       .where('reporter.phone', '==', phone)
       .get();
-    return snap.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ticketNumber: data.ticketNumber as string,
-        status: data.status as string,
-        photos: (data.photos?.evidence as string[]) || [],
-        repairPhotos: (data.photos?.repair as string[]) || [],
-        description: (data.novelty?.description as string) || '',
-        ciudad: (data.ciudad as string) || '',
-        canal: (data.canal as string) || '',
-        punto: (data.point?.name as string) || '',
-        createdAt: data.timestamps?.createdAt as number | undefined,
-      };
-    });
+    return snap.docs
+      .map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ticketNumber: data.ticketNumber as string,
+          status: data.status as string,
+          photos: (data.photos?.evidence as string[]) || [],
+          repairPhotos: (data.photos?.repair as string[]) || [],
+          description: (data.novelty?.description as string) || '',
+          ciudad: (data.ciudad as string) || '',
+          canal: (data.canal as string) || '',
+          punto: (data.point?.name as string) || '',
+          createdAt: data.timestamps?.createdAt as number | undefined,
+        };
+      })
+      .filter((t) => t.status !== 'ARCHIVADO');
   }
 
   // Sube un buffer arbitrario a Storage (usado por el simulador).
@@ -981,7 +992,10 @@ export class WhatsappService implements OnModuleInit {
         await send(`Por favor selecciona un número entre 1 y ${tickets.length}.`);
         return;
       }
-      await db.collection('tickets').doc(tickets[idx].id).delete();
+      await db.collection('tickets').doc(tickets[idx].id).update({
+        status: 'ARCHIVADO',
+        'timestamps.updatedAt': Date.now(),
+      });
       await send(`✅ Ticket *${tickets[idx].ticketNumber}* eliminado correctamente.`);
       await sessionRef.set(
         { state: 'IDLE', pendingTickets: null },
@@ -1007,46 +1021,15 @@ export class WhatsappService implements OnModuleInit {
         { merge: true },
       );
 
-    // ─── MEJORA DE CAMPO SOLICITADA POR ADMIN ────────────────────────────────
+    // ─── NOTIFICACIÓN DE ACTUALIZACIÓN SOLICITADA POR ADMIN ─────────────────
+    // El admin notificó al usuario. Cuando el usuario escribe, vuelve al menú normal.
     } else if (state === 'WAITING_ADMIN_REQUESTED_UPDATE') {
-      const fieldKey: string = session.requestedFieldKey || '';
-      const fieldLabel: string = session.requestedFieldLabel || 'campo';
-      const requestedTicketId: string = session.requestedTicketId || '';
-
-      if (!body || !requestedTicketId) {
-        await send('Por favor envía el texto con la nueva información.');
-        return;
-      }
-
-      const ticketRef = db.collection('tickets').doc(requestedTicketId);
-      const ticketSnap = await ticketRef.get();
-      if (!ticketSnap.exists) {
-        await send('El ticket ya no existe. Operación cancelada.');
-        await sessionRef.set({ state: 'IDLE', requestedFieldKey: null, requestedFieldLabel: null, requestedTicketId: null }, { merge: true });
-        return;
-      }
-
-      const value = body.trim();
-      const updateData: Record<string, unknown> = { 'timestamps.updatedAt': Date.now() };
-      if (fieldKey === 'ciudad') {
-        updateData['ciudad'] = normalizeText(value);
-      } else if (fieldKey === 'canal') {
-        updateData['canal'] = normalizeText(value);
-      } else if (fieldKey === 'punto') {
-        updateData['point.name'] = normalizeText(value);
-        updateData['point.id'] = normalizeText(value).toLowerCase().replace(/\s+/g, '_');
-      } else if (fieldKey.includes('.')) {
-        updateData[fieldKey] = value;
-      } else {
-        updateData[`extraFields.${fieldKey}`] = value;
-      }
-
-      await ticketRef.update(updateData);
       await sessionRef.set(
         { state: 'IDLE', requestedFieldKey: null, requestedFieldLabel: null, requestedTicketId: null },
         { merge: true },
       );
-      await send(`✅ ¡Gracias! La información de *${fieldLabel}* del ticket ha sido actualizada.`);
+      const msgs = await this.botConfig.getMessages().catch(() => null);
+      await send(msgs?.menu ?? MENU_FALLBACK);
 
     // ─── RESET ───────────────────────────────────────────────────────────────
     } else {
@@ -1070,8 +1053,8 @@ export class WhatsappService implements OnModuleInit {
     const ticketNumber: string = ticket.ticketNumber;
 
     const msg = customMessage
-      ? `El administrador solicita que mejores *${fieldLabel}* del ticket *${ticketNumber}*.\n\n_${customMessage}_\n\nPor favor responde con la nueva información:`
-      : `El administrador solicita que mejores *${fieldLabel}* del ticket *${ticketNumber}*.\n\nPor favor responde con la nueva información:`;
+      ? `📋 El administrador te solicita actualizar el campo *${fieldLabel}* de tu ticket *${ticketNumber}*.\n\n_${customMessage}_\n\nPara actualizar esta información, selecciona la opción *3* (Editar) en el menú.`
+      : `📋 El administrador te solicita actualizar el campo *${fieldLabel}* de tu ticket *${ticketNumber}*.\n\nPara actualizar esta información, selecciona la opción *3* (Editar) en el menú.`;
 
     const sessionRef = db.collection('whatsapp_sessions').doc(phone);
     await sessionRef.set(

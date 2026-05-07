@@ -7,13 +7,14 @@ export interface User {
   role: Role;
 }
 
-export type TicketStatus = 
-  | 'REPORTADO' 
-  | 'REVISION' 
-  | 'EN_REPARACION' 
-  | 'REPARADO' 
+export type TicketStatus =
+  | 'REPORTADO'
+  | 'REVISION'
+  | 'EN_REPARACION'
+  | 'REPARADO'
   | 'ENTREGADO'
-  | 'FINALIZADO';
+  | 'FINALIZADO'
+  | 'ARCHIVADO';
 
 export interface Ticket {
   id: string;
